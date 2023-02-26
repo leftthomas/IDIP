@@ -3,6 +3,7 @@
 ```
 export DETECTRON2_DATASETS=/home/data
 CUDA_VISIBLE_DEVICE=0 screen python main.py --config-file configs/res50.yaml 
+screen tensorboard --logdir=results --bind_all
 ```
 
 ![](results/arch.jpeg)
