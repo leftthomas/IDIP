@@ -1,0 +1,6 @@
+_BASE_: "base.yaml"
+MODEL:
+  WEIGHTS: "results/torchvision-R-101.pkl"
+  RESNETS:
+    DEPTH: 101
+OUTPUT_DIR: "results/r101"
