@@ -185,6 +185,8 @@ class DynamicHead(nn.Module):
         if len(t) != len(mask_feat):
             import pdb
             pdb.set_trace()
+        inter_class_logits = []
+        inter_pred_bboxes = []
         inter_kernel = []
         bs = len(features[0])
         bboxes = init_bboxes
@@ -198,9 +200,12 @@ class DynamicHead(nn.Module):
         for head_idx, rcnn_head in enumerate(self.head_series):
             class_logits, pred_bboxes, proposal_features, kernel_pred = rcnn_head(features, bboxes, proposal_features,
                                                                                   self.box_pooler, time)
+            inter_class_logits.append(class_logits)
+            inter_pred_bboxes.append(pred_bboxes)
+            inter_kernel.append(kernel_pred)
             bboxes = pred_bboxes.detach()
 
-        return class_logits, pred_bboxes, kernel_pred, mask_feat
+        return torch.stack(inter_class_logits), torch.stack(inter_pred_bboxes), torch.stack(inter_kernel), mask_feat
 
 
 class RCNNHead(nn.Module):
