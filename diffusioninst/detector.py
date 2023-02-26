@@ -214,6 +214,10 @@ class DiffusionInst(nn.Module):
             cfg=cfg, cost_class=class_weight, cost_bbox=l1_weight, cost_giou=giou_weight, use_focal=self.use_focal
         )
         weight_dict = {"loss_ce": class_weight, "loss_bbox": l1_weight, "loss_giou": giou_weight}
+        aux_weight_dict = {}
+        for i in range(self.num_heads - 1):
+            aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
+        weight_dict.update(aux_weight_dict)
 
         losses = ["labels", "boxes", "mask"]
 
@@ -238,7 +242,7 @@ class DiffusionInst(nn.Module):
         outputs_class, outputs_coord, outputs_kernel, mask_feat = self.head(backbone_feats, x_boxes, t, None)
 
         # torch.Size([6, 1, 500, 80]), torch.Size([6, 1, 500, 153]), torch.Size([1, 8, 200, 304])
-        x_start = outputs_coord  # (batch, num_proposals, 4) predict boxes: absolute coordinates (x1, y1, x2, y2)
+        x_start = outputs_coord[-1]  # (batch, num_proposals, 4) predict boxes: absolute coordinates (x1, y1, x2, y2)
         x_start = x_start / images_whwh[:, None, :]
         x_start = _box_xyxy_to_cxcywh(x_start)
         x_start = (x_start * 2 - 1.) * self.scale
@@ -275,7 +279,7 @@ class DiffusionInst(nn.Module):
 
             if self.box_renewal:  # filter
                 # true
-                score_per_image, box_per_image = outputs_class[0], outputs_coord[0]
+                score_per_image, box_per_image = outputs_class[-1][0], outputs_coord[-1][0]
                 threshold = 0.5
                 score_per_image = torch.sigmoid(score_per_image)
                 value, _ = torch.max(score_per_image, -1, keepdim=False)
@@ -305,11 +309,11 @@ class DiffusionInst(nn.Module):
                 # replenish with randn boxes
                 img = torch.cat((img, torch.randn(1, self.num_proposals - num_remain, 4, device=img.device)), dim=1)
 
-        output = {'pred_logits': outputs_class, 'pred_boxes': outputs_coord}
+        output = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         box_cls = output["pred_logits"]
         box_pred = output["pred_boxes"]
 
-        results = self.inference(box_cls, box_pred, outputs_kernel, mask_feat, images.image_sizes)
+        results = self.inference(box_cls, box_pred, outputs_kernel[-1], mask_feat, images.image_sizes)
         if do_postprocess:
             processed_results = []
             for results_per_image, input_per_image, image_size in zip(results, batched_inputs, images.image_sizes):
@@ -367,8 +371,11 @@ class DiffusionInst(nn.Module):
             t = t.squeeze(-1)
             x_boxes = x_boxes * images_whwh[:, None, :]
             outputs_class, outputs_coord, outputs_kernel, mask_feat = self.head(features, x_boxes, t, None)
-            output = {'pred_logits': outputs_class, 'pred_boxes': outputs_coord,
-                      'pred_kernels': outputs_kernel, 'mask_feat': mask_feat}
+            output = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1],
+                      'pred_kernels': outputs_kernel[-1], 'mask_feat': mask_feat}
+            output['aux_outputs'] = [{'pred_logits': a, 'pred_boxes': b, 'pred_kernels': c, 'mask_feat': mask_feat}
+                                     for a, b, c in zip(outputs_class[:-1], outputs_coord[:-1], outputs_kernel[:-1])]
+
             loss_dict = self.criterion(output, targets)
             weight_dict = self.criterion.weight_dict
             for k in loss_dict.keys():
