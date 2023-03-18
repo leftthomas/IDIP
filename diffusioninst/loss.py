@@ -3,8 +3,8 @@ import torch.distributed as dist
 import torch.nn.functional as F
 import torchvision.ops as ops
 from torch import nn
+from torchvision.ops import generalized_box_iou, box_convert
 from torchvision.ops import sigmoid_focal_loss
-from torchvision.ops.boxes import generalized_box_iou, _box_xyxy_to_cxcywh, _box_cxcywh_to_xyxy
 
 
 def dice_coefficient(x, target):
@@ -45,56 +45,38 @@ def parse_dynamic_params(params, channels, weight_nums, bias_nums):
     return weight_splits, bias_splits
 
 
-class SetCriterionDynamicK(nn.Module):
+class SetCriterion(nn.Module):
     """ This class computes the loss for DiffusionInst.
     The process happens in two steps:
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
-        2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
+        2) we supervise each pair of matched ground-truth / prediction (supervise class, box and mask)
     """
 
-    def __init__(self, cfg, num_classes, matcher, weight_dict, eos_coef, losses, use_focal):
+    def __init__(self, cfg, num_classes, matcher, eos_coef):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
             matcher: module able to compute a matching between targets and proposals
-            weight_dict: dict containing as key the names of the losses and as values their relative weight.
             eos_coef: relative classification weight applied to the no-object category
-            losses: list of all the losses to be applied. See get_loss for list of available losses.
         """
         super().__init__()
         self.cfg = cfg
         self.num_classes = num_classes
         self.matcher = matcher
-        self.weight_dict = weight_dict
         self.eos_coef = eos_coef
-        self.losses = losses
-        self.use_focal = use_focal
         self.weight_nums = [64, 64, 8]
         self.bias_nums = [8, 8, 1]
 
-        if self.use_focal:
-            self.focal_loss_alpha = cfg.MODEL.DiffusionInst.ALPHA
-            self.focal_loss_gamma = cfg.MODEL.DiffusionInst.GAMMA
-        else:
-            empty_weight = torch.ones(self.num_classes + 1)
-            empty_weight[-1] = self.eos_coef
-            self.register_buffer('empty_weight', empty_weight)
-
-    def loss_labels(self, outputs, targets, indices, num_boxes, log=False):
+    def loss_labels(self, outputs, targets, indices):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
-        assert 'pred_logits' in outputs
         src_logits = outputs['pred_logits']
         batch_size = len(targets)
-
-        # idx = self._get_src_permutation_idx(indices)
-        # target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
                                     dtype=torch.int64, device=src_logits.device)
         src_logits_list = []
         target_classes_o_list = []
-        # target_classes[idx] = target_classes_o
         for batch_idx in range(batch_size):
             valid_query = indices[batch_idx][0]
             gt_multi_idx = indices[batch_idx][1]
@@ -107,38 +89,28 @@ class SetCriterionDynamicK(nn.Module):
             src_logits_list.append(bz_src_logits[valid_query])
             target_classes_o_list.append(target_classes_o[gt_multi_idx])
 
-        if self.use_focal:
-            num_boxes = torch.cat(target_classes_o_list).shape[0] if len(target_classes_o_list) != 0 else 1
+        num_boxes = torch.cat(target_classes_o_list).shape[0] if len(target_classes_o_list) != 0 else 1
 
-            target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], self.num_classes + 1],
-                                                dtype=src_logits.dtype, layout=src_logits.layout,
-                                                device=src_logits.device)
-            target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
+        target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], self.num_classes + 1],
+                                            dtype=src_logits.dtype, layout=src_logits.layout,
+                                            device=src_logits.device)
+        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
+        target_classes_onehot = target_classes_onehot[:, :, :-1]
 
-            gt_classes = torch.argmax(target_classes_onehot, dim=-1)
-            target_classes_onehot = target_classes_onehot[:, :, :-1]
+        src_logits = src_logits.flatten(0, 1)
+        target_classes_onehot = target_classes_onehot.flatten(0, 1)
+        cls_loss = sigmoid_focal_loss(src_logits, target_classes_onehot)
 
-            src_logits = src_logits.flatten(0, 1)
-            target_classes_onehot = target_classes_onehot.flatten(0, 1)
-            if self.use_focal:
-                cls_loss = sigmoid_focal_loss(src_logits, target_classes_onehot, alpha=self.focal_loss_alpha,
-                                              gamma=self.focal_loss_gamma)
-            else:
-                cls_loss = F.binary_cross_entropy_with_logits(src_logits, target_classes_onehot, reduction="none")
-
-            loss_ce = torch.sum(cls_loss) / num_boxes
-            losses = {'loss_ce': loss_ce}
-        else:
-            raise NotImplementedError
+        loss_ce = torch.sum(cls_loss) / num_boxes
+        losses = {'loss_ce': loss_ce}
 
         return losses
 
-    def loss_boxes(self, outputs, targets, indices, num_boxes):
+    def loss_boxes(self, outputs, targets, indices):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
            targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
            The target boxes are expected in format (center_x, center_y, w, h), normalized by the image size.
         """
-        assert 'pred_boxes' in outputs
         src_boxes = outputs['pred_boxes']
 
         batch_size = len(targets)
@@ -169,7 +141,8 @@ class SetCriterionDynamicK(nn.Module):
 
             losses = {}
             # require normalized (x1, y1, x2, y2)
-            loss_bbox = F.l1_loss(src_boxes_norm, _box_cxcywh_to_xyxy(target_boxes), reduction='none')
+            loss_bbox = F.l1_loss(src_boxes_norm, box_convert(target_boxes, in_fmt="cxcywh", out_fmt="xyxy"),
+                                  reduction='none')
             losses['loss_bbox'] = loss_bbox.sum() / num_boxes
 
             # loss_giou = giou_loss(box_ops.box_cxcywh_to_xyxy(src_boxes), box_ops.box_cxcywh_to_xyxy(target_boxes))
@@ -181,28 +154,7 @@ class SetCriterionDynamicK(nn.Module):
 
         return losses
 
-    def mask_heads_forward(self, features, weights, biases, num_instances):
-        '''
-        :param features
-        :param weights: [w0, w1, ...]
-        :param bias: [b0, b1, ...]
-        :return:
-        '''
-        assert features.dim() == 4
-        n_layers = len(weights)
-        x = features
-        for i, (w, b) in enumerate(zip(weights, biases)):
-            x = F.conv2d(x,
-                         w,
-                         bias=b,
-                         stride=1,
-                         padding=0,
-                         groups=num_instances)
-            if i < n_layers - 1:
-                x = F.relu(x)
-        return x
-
-    def loss_masks(self, outputs, targets, indices, num_boxes):
+    def loss_masks(self, outputs, targets, indices):
         assert 'pred_kernels' in outputs
         assert 'mask_feat' in outputs
 
@@ -291,26 +243,10 @@ class SetCriterionDynamicK(nn.Module):
         losses = {}
         for loss in self.losses:
             losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
-        # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
-        if 'aux_outputs' in outputs:
-            for i, aux_outputs in enumerate(outputs['aux_outputs']):
-                indices, _ = self.matcher(aux_outputs, targets)
-                for loss in self.losses:
-                    if loss == 'masks':
-                        # Intermediate masks losses are too costly to compute, we ignore them.
-                        continue
-                    kwargs = {}
-                    if loss == 'labels':
-                        # Logging is enabled only for the last layer
-                        kwargs = {'log': False}
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
-                    l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
-                    losses.update(l_dict)
-
         return losses
 
 
-class HungarianMatcherDynamicK(nn.Module):
+class HungarianMatcher(nn.Module):
     """This class computes an assignment between the targets and the predictions of the network
     For efficiency reasons, the targets don't include the no_object. Because of this, in general,
     there are more predictions than targets. In this case, we do a 1-to-k (dynamic) matching of the best predictions,
@@ -329,11 +265,7 @@ class HungarianMatcherDynamicK(nn.Module):
         self.cost_class = cost_class
         self.cost_bbox = cost_bbox
         self.cost_giou = cost_giou
-        self.use_focal = use_focal
         self.ota_k = cfg.MODEL.DiffusionInst.OTA_K
-        if self.use_focal:
-            self.focal_loss_alpha = cfg.MODEL.DiffusionInst.ALPHA
-            self.focal_loss_gamma = cfg.MODEL.DiffusionInst.GAMMA
         assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
 
     def forward(self, outputs, targets):
@@ -341,12 +273,8 @@ class HungarianMatcherDynamicK(nn.Module):
         with torch.no_grad():
             bs, num_queries = outputs["pred_logits"].shape[:2]
             # We flatten to compute the cost matrices in a batch
-            if self.use_focal:
-                out_prob = outputs["pred_logits"].sigmoid()  # [batch_size, num_queries, num_classes]
-                out_bbox = outputs["pred_boxes"]  # [batch_size,  num_queries, 4]
-            else:
-                out_prob = outputs["pred_logits"].softmax(-1)  # [batch_size, num_queries, num_classes]
-                out_bbox = outputs["pred_boxes"]  # [batch_size, num_queries, 4]
+            out_prob = outputs["pred_logits"].sigmoid()  # [batch_size, num_queries, num_classes]
+            out_bbox = outputs["pred_boxes"]  # [batch_size,  num_queries, 4]
 
             indices = []
             matched_ids = []
@@ -367,22 +295,19 @@ class HungarianMatcherDynamicK(nn.Module):
                 bz_gtboxs = targets[batch_idx]['boxes']  # [num_gt, 4] normalized (cx, xy, w, h)
                 bz_gtboxs_abs_xyxy = targets[batch_idx]['boxes_xyxy']
                 fg_mask, is_in_boxes_and_center = self.get_in_boxes_info(
-                    _box_xyxy_to_cxcywh(bz_boxes),  # absolute (cx, cy, w, h)
-                    _box_xyxy_to_cxcywh(bz_gtboxs_abs_xyxy),  # absolute (cx, cy, w, h)
+                    box_convert(bz_boxes, in_fmt="xyxy", out_fmt="cxcywh"),  # absolute (cx, cy, w, h)
+                    box_convert(bz_gtboxs_abs_xyxy, in_fmt="xyxy", out_fmt="cxcywh"),  # absolute (cx, cy, w, h)
                     expanded_strides=32
                 )
 
                 pair_wise_ious = ops.box_iou(bz_boxes, bz_gtboxs_abs_xyxy)
 
                 # Compute the classification cost.
-                if self.use_focal:
-                    alpha = self.focal_loss_alpha
-                    gamma = self.focal_loss_gamma
-                    neg_cost_class = (1 - alpha) * (bz_out_prob ** gamma) * (-(1 - bz_out_prob + 1e-8).log())
-                    pos_cost_class = alpha * ((1 - bz_out_prob) ** gamma) * (-(bz_out_prob + 1e-8).log())
-                    cost_class = pos_cost_class[:, bz_tgt_ids] - neg_cost_class[:, bz_tgt_ids]
-                else:
-                    cost_class = -bz_out_prob[:, bz_tgt_ids]
+                alpha = self.focal_loss_alpha
+                gamma = self.focal_loss_gamma
+                neg_cost_class = (1 - alpha) * (bz_out_prob ** gamma) * (-(1 - bz_out_prob + 1e-8).log())
+                pos_cost_class = alpha * ((1 - bz_out_prob) ** gamma) * (-(bz_out_prob + 1e-8).log())
+                cost_class = pos_cost_class[:, bz_tgt_ids] - neg_cost_class[:, bz_tgt_ids]
 
                 bz_image_size_out = targets[batch_idx]['image_size_xyxy']
                 bz_image_size_tgt = targets[batch_idx]['image_size_xyxy_tgt']
