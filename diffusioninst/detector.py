@@ -6,7 +6,7 @@ from detectron2.modeling import META_ARCH_REGISTRY, build_backbone, detector_pos
 from detectron2.modeling.poolers import ROIPooler
 from detectron2.structures import Boxes, ImageList, Instances
 from torch import nn
-from torchvision.ops import box_convert
+from torchvision.ops import box_convert, clip_boxes_to_image
 
 from .head import DetectHead, MaskHead, cosine_schedule
 from .loss import SetCriterion
@@ -70,7 +70,7 @@ class DiffusionInst(nn.Module):
         features = [src[f] for f in self.in_features]
 
         if self.training:
-            targets, boxes, pool_boxes, noises, ts = self.preprocess_target(batched_inputs)
+            targets, boxes, noises, ts = self.preprocess_target(batched_inputs)
             roi_features = torch.flatten(self.pooler(features, pool_boxes), start_dim=-2)
             pred_logits, pred_boxes = self.detect_head(roi_features, ts, boxes)
             pred_masks = self.mask_head(roi_features, features)
@@ -92,54 +92,61 @@ class DiffusionInst(nn.Module):
         return images
 
     def preprocess_target(self, batched_inputs):
-        targets, diffused_boxes, pool_boxes, noises, ts = [], [], [], [], []
+        targets, diffused_boxes, noises, ts = [], [], [], []
         for x in batched_inputs:
             instances = x['instances'].to(self.device)
             gt_classes = instances.gt_classes
+            gt_boxes = instances.gt_boxes.tensor
             gt_masks = instances.gt_masks.tensor
 
-            h, w = instances.image_size
-            image_size = torch.as_tensor([w, h, w, h], device=self.device).view(1, 4)
-            gt_boxes = instances.gt_boxes.tensor
-
-            crpt_boxes, noise, t = self.prepare_diffusion(
-                box_convert(gt_boxes / image_size, in_fmt='xyxy', out_fmt='cxcywh'))
-            crpt_boxes = crpt_boxes * image_size
+            crpt_boxes, noise, t = self.prepare_diffusion(gt_boxes, instances.image_size)
             diffused_boxes.append(crpt_boxes)
-            pool_boxes.append(Boxes(crpt_boxes))
             noises.append(noise)
             ts.append(t)
 
             targets.append({'gt_classes': gt_classes, 'gt_boxes': gt_boxes, 'gt_masks': gt_masks})
 
-        return targets, torch.stack(diffused_boxes), pool_boxes, torch.stack(noises), torch.stack(ts).squeeze(-1)
+        return targets, torch.stack(diffused_boxes), torch.stack(noises), torch.stack(ts).squeeze(-1)
 
-    def prepare_diffusion(self, gt_boxes):
-        # gt box padding
+    def prepare_diffusion(self, gt_boxes, image_size):
+        # normalize to relative coordinates, and use cxcywh format
+        h, w = image_size
+        image_size = torch.as_tensor([w, h, w, h], device=self.device).view(1, 4)
+        gt_boxes = box_convert(gt_boxes / image_size, in_fmt='xyxy', out_fmt='cxcywh')
+
+        # box padding
         num_gt = len(gt_boxes)
         if num_gt < self.num_proposals:
             # ref DiffusionDet: Diffusion Model for Object Detection
             box_placeholder = torch.randn(self.num_proposals - num_gt, 4, device=self.device) / 6 + 0.5
-            box_placeholder[:, 2:] = torch.clamp(box_placeholder[:, 2:], min=1e-4, max=1)
+            box_placeholder = torch.clamp(box_placeholder, min=0, max=1)
+            box_placeholder[:, 2:] = torch.clamp(box_placeholder[:, 2:], min=1e-4, max=1.0)
+            box_placeholder = box_convert(box_placeholder, in_fmt='cxcywh', out_fmt='xyxy')
+            box_placeholder = clip_boxes_to_image(box_placeholder, (1, 1))
+            box_placeholder = box_convert(box_placeholder, in_fmt='xyxy', out_fmt='cxcywh')
             x_start = torch.cat((gt_boxes, box_placeholder), dim=0)
         elif num_gt > self.num_proposals:
+            # random select
             select_mask = [True] * self.num_proposals + [False] * (num_gt - self.num_proposals)
             random.shuffle(select_mask)
             x_start = gt_boxes[select_mask]
         else:
             x_start = gt_boxes
 
+        # operate in [-1, 1] space to keep same with diffusion noise
         x_start = x_start * 2 - 1
-
-        # noise sample
         t = torch.randint(0, self.num_steps, (1,), device=self.device)
         noise = torch.randn_like(x_start)
         sqrt_alphas_cumprod_t = self.sqrt_alphas_cumprod[t]
         sqrt_one_minus_alphas_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t]
         x_t = sqrt_alphas_cumprod_t * x_start + sqrt_one_minus_alphas_cumprod_t * noise
-        x_t = torch.clamp(x_t, min=-1, max=1)
 
-        crpt_boxes = (x_t + 1) / 2
+        # back to absolute coordinates, and use xyxy format
+        x_t = torch.clamp((x_t + 1) / 2, min=0, max=1)
+        x_t[:, 2:] = torch.clamp(x_t[:, 2:], min=1e-4, max=1.0)
+        x_t = box_convert(x_t, in_fmt='cxcywh', out_fmt='xyxy')
+        x_t = clip_boxes_to_image(x_t, (1, 1))
+        crpt_boxes = x_t * image_size
         return crpt_boxes, noise, t
 
     def model_predictions(self, backbone_feats, images_whwh, x, t):
