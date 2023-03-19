@@ -70,8 +70,10 @@ class DiffusionInst(nn.Module):
         features = [src[f] for f in self.in_features]
 
         if self.training:
+            # [B], [B, N, 4], [B, N, 4], [B]
             targets, boxes, noises, ts = self.preprocess_target(batched_inputs)
-            roi_features = torch.flatten(self.pooler(features, pool_boxes), start_dim=-2)
+            # [B*N, D, S*S]
+            roi_features = torch.flatten(self.pooler(features, [Boxes(b) for b in boxes]), start_dim=-2)
             pred_logits, pred_boxes = self.detect_head(roi_features, ts, boxes)
             pred_masks = self.mask_head(roi_features, features)
             pred_logits = pred_logits.view(-1, self.num_proposals, self.num_classes)
