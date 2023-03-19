@@ -20,7 +20,6 @@ def add_diffusioninst_config(cfg):
     cfg.MODEL.DiffusionInst.CLASS_WEIGHT = 2.0
     cfg.MODEL.DiffusionInst.GIOU_WEIGHT = 2.0
     cfg.MODEL.DiffusionInst.L1_WEIGHT = 5.0
-    cfg.MODEL.DiffusionInst.NO_OBJECT_WEIGHT = 0.1
 
     # optimizer
     cfg.SOLVER.OPTIMIZER = "ADAMW"

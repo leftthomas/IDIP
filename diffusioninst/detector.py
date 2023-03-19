@@ -2,18 +2,14 @@ import random
 from typing import List
 
 import torch
-import torch.nn.functional as F
-from detectron2.layers import batched_nms
-from detectron2.modeling import META_ARCH_REGISTRY, build_backbone
+from detectron2.modeling import META_ARCH_REGISTRY, build_backbone, detector_postprocess
 from detectron2.modeling.poolers import ROIPooler
-from detectron2.structures import Boxes, ImageList
-from detectron2.structures import Instances
+from detectron2.structures import Boxes, ImageList, Instances
 from torch import nn
 from torchvision.ops import box_convert
 
-from .head import DetectHead, MaskHead
-from .loss import SetCriterion, parse_dynamic_params
-from .utils import cosine_schedule
+from .head import DetectHead, MaskHead, cosine_schedule
+from .loss import SetCriterion
 
 
 @META_ARCH_REGISTRY.register()
@@ -94,7 +90,9 @@ class DiffusionInst(nn.Module):
             targets, boxes, pool_boxes, noises, ts = self.preprocess_target(batched_inputs)
             roi_features = torch.flatten(self.pooler(features, pool_boxes), start_dim=-2)
             pred_logits, pred_boxes = self.detect_head(roi_features, ts, boxes)
-            pred_masks = self.mask_head(features)
+            pred_masks = self.mask_head(roi_features, features)
+            pred_logits = pred_logits.view(-1, self.num_proposals, self.num_classes)
+            pred_boxes = pred_boxes.view(-1, self.num_proposals, 4)
             output = {'pred_logits': pred_logits, 'pred_boxes': pred_boxes, 'pred_masks': pred_masks}
             loss_dict = self.criterion(output, targets)
             for k in loss_dict.keys():
@@ -123,9 +121,10 @@ class DiffusionInst(nn.Module):
 
             h, w = instances.image_size
             image_size = torch.as_tensor([w, h, w, h], device=self.device).view(1, 4)
-            gt_boxes = box_convert(instances.gt_boxes.tensor / image_size, in_fmt="xyxy", out_fmt="cxcywh")
+            gt_boxes = instances.gt_boxes.tensor
 
-            crpt_boxes, noise, t = self.prepare_diffusion(gt_boxes)
+            crpt_boxes, noise, t = self.prepare_diffusion(
+                box_convert(gt_boxes / image_size, in_fmt="xyxy", out_fmt="cxcywh"))
             crpt_boxes = crpt_boxes * image_size
             diffused_boxes.append(crpt_boxes)
             pool_boxes.append(Boxes(crpt_boxes))
@@ -164,9 +163,7 @@ class DiffusionInst(nn.Module):
         x_t = sqrt_alphas_cumprod_t * x_start + sqrt_one_minus_alphas_cumprod_t * noise
         x_t = torch.clamp(x_t, min=-1, max=1)
 
-        x_t = (x_t + 1) / 2
-        crpt_boxes = box_convert(x_t, in_fmt="cxcywh", out_fmt="xyxy")
-
+        crpt_boxes = (x_t + 1) / 2
         return crpt_boxes, noise, t
 
     def predict_noise_from_start(self, x_t, t, x0):
@@ -258,26 +255,9 @@ class DiffusionInst(nn.Module):
             for results_per_image, input_per_image, image_size in zip(results, batched_inputs, images.image_sizes):
                 height = input_per_image.get("height", image_size[0])
                 width = input_per_image.get("width", image_size[1])
-                mid_size = image_size
-                r = detector_postprocess(results_per_image, height, width, mid_size)
+                r = detector_postprocess(results_per_image, height, width)
                 processed_results.append({"instances": r})
             return processed_results
-
-    def mask_heads_forward(self, features, weights, biases, num_instances):
-        '''
-        :param features
-        :param weights: [w0, w1, ...]
-        :param bias: [b0, b1, ...]
-        :return:
-        '''
-        assert features.dim() == 4
-        n_layers = len(weights)
-        x = features
-        for i, (w, b) in enumerate(zip(weights, biases)):
-            x = F.conv2d(x, w, bias=b, stride=1, padding=0, groups=num_instances)
-            if i < n_layers - 1:
-                x = F.relu(x)
-        return x
 
     def inference(self, box_cls, box_pred, kernel, mask_feat, image_sizes):
         """
@@ -297,71 +277,29 @@ class DiffusionInst(nn.Module):
         assert len(box_cls) == len(image_sizes)
         results = []
 
-        if self.use_focal:
-            scores = torch.sigmoid(box_cls)
-            labels = torch.arange(self.num_classes, device=self.device). \
-                unsqueeze(0).repeat(self.num_proposals, 1).flatten(0, 1)
+        scores = torch.sigmoid(box_cls)
+        labels = torch.arange(self.num_classes, device=self.device). \
+            unsqueeze(0).repeat(self.num_proposals, 1).flatten(0, 1)
 
-            for i, (scores_per_image, box_pred_per_image, image_size, ker, mas) in enumerate(zip(
-                    scores, box_pred, image_sizes, kernel, mask_feat
-            )):
-                result = Instances(image_size)
-                scores_per_image, topk_indices = scores_per_image.flatten(0, 1).topk(self.num_proposals, sorted=False)
-                labels_per_image = labels[topk_indices]
-                ker = ker.view(-1, 1, 153).repeat(1, self.num_classes, 1).view(-1, 153)
-                # torch.Size([500, 4])
+        for i, (scores_per_image, box_pred_per_image, image_size, ker, mas) in enumerate(zip(
+                scores, box_pred, image_sizes, kernel, mask_feat
+        )):
+            result = Instances(image_size)
+            scores_per_image, topk_indices = scores_per_image.flatten(0, 1).topk(self.num_proposals, sorted=False)
+            labels_per_image = labels[topk_indices]
+            ker = ker.view(-1, 1, 153).repeat(1, self.num_classes, 1).view(-1, 153)
+            # torch.Size([500, 4])
 
-                box_pred_per_image = box_pred_per_image.view(-1, 1, 4).repeat(1, self.num_classes, 1).view(-1, 4)
-                # torch.Size([40000, 4])
-                ker = ker[topk_indices]
-                box_pred_per_image = box_pred_per_image[topk_indices]
-                # torch.Size([500, 4])
+            box_pred_per_image = box_pred_per_image.view(-1, 1, 4).repeat(1, self.num_classes, 1).view(-1, 4)
+            # torch.Size([40000, 4])
+            ker = ker[topk_indices]
+            box_pred_per_image = box_pred_per_image[topk_indices]
+            # torch.Size([500, 4])
 
-                if self.use_nms:
-                    keep = batched_nms(box_pred_per_image, scores_per_image, labels_per_image, 0.5)
-                    box_pred_per_image = box_pred_per_image[keep]
-                    scores_per_image = scores_per_image[keep]
-                    labels_per_image = labels_per_image[keep]
-                    ker_per_image = ker[keep]
-
-                num_instance = len(ker_per_image)
-                weights, biases = parse_dynamic_params(
-                    ker_per_image,
-                    8,
-                    self.weight_nums,
-                    self.bias_nums)
-                mask_feat_head = mas.unsqueeze(0).repeat(1, num_instance, 1, 1)
-                mask_logits = self.mask_heads_forward(
-                    mask_feat_head,
-                    weights,
-                    biases,
-                    num_instance)
-                mask_logits = mask_logits.reshape(-1, 1, mas.size(1), mas.size(2)).squeeze(1).sigmoid()
-                # mask_logits.gt_(0.5)
-                # mask_logits = F.interpolate(mask_logits, size=image_size, mode='bilinear').squeeze(1)
-                result.pred_boxes = Boxes(box_pred_per_image)
-                result.scores = scores_per_image
-                result.pred_classes = labels_per_image
-                result.pred_masks = mask_logits
-                results.append(result)
-
-        else:
-            # For each box we assign the best class or the second best if the best on is `no_object`.
-            scores, labels = F.softmax(box_cls, dim=-1)[:, :, :-1].max(-1)
-
-            for i, (scores_per_image, labels_per_image, box_pred_per_image, image_size) in enumerate(zip(
-                    scores, labels, box_pred, image_sizes)):
-
-                if self.use_nms:
-                    keep = batched_nms(box_pred_per_image, scores_per_image, labels_per_image, 0.5)
-                    box_pred_per_image = box_pred_per_image[keep]
-                    scores_per_image = scores_per_image[keep]
-                    labels_per_image = labels_per_image[keep]
-
-                result = Instances(image_size)
-                result.pred_boxes = Boxes(box_pred_per_image)
-                result.scores = scores_per_image
-                result.pred_classes = labels_per_image
-                results.append(result)
-
+            mask_logits = mask_logits.reshape(-1, 1, mas.size(1), mas.size(2)).squeeze(1).sigmoid()
+            result.pred_boxes = Boxes(box_pred_per_image)
+            result.scores = scores_per_image
+            result.pred_classes = labels_per_image
+            result.pred_masks = mask_logits
+            results.append(result)
         return results

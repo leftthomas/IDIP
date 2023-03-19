@@ -1,10 +1,7 @@
 import torch
-import torch.distributed as dist
 import torch.nn.functional as F
-import torchvision.ops as ops
 from torch import nn
-from torchvision.ops import generalized_box_iou, box_convert
-from torchvision.ops import sigmoid_focal_loss
+from torchvision.ops import generalized_box_iou, sigmoid_focal_loss, box_convert, box_iou
 
 
 def dice_coefficient(x, target):
@@ -18,33 +15,6 @@ def dice_coefficient(x, target):
     return loss
 
 
-def parse_dynamic_params(params, channels, weight_nums, bias_nums):
-    assert params.dim() == 2
-    assert len(weight_nums) == len(bias_nums)
-    assert params.size(1) == sum(weight_nums) + sum(bias_nums)
-    num_instances = params.size(0)
-    num_layers = len(weight_nums)
-
-    params_splits = list(
-        torch.split_with_sizes(params, weight_nums + bias_nums, dim=1))
-
-    weight_splits = params_splits[:num_layers]
-    bias_splits = params_splits[num_layers:]
-
-    for l in range(num_layers):
-        if l < num_layers - 1:
-            # out_channels x in_channels x 1 x 1
-            weight_splits[l] = weight_splits[l].reshape(
-                num_instances * channels, -1, 1, 1)
-            bias_splits[l] = bias_splits[l].reshape(num_instances * channels)
-        else:
-            # out_channels x in_channels x 1 x 1
-            weight_splits[l] = weight_splits[l].reshape(
-                num_instances * 1, -1, 1, 1)
-            bias_splits[l] = bias_splits[l].reshape(num_instances)
-    return weight_splits, bias_splits
-
-
 class SetCriterion(nn.Module):
     """ This class computes the loss for DiffusionInst.
     The process happens in two steps:
@@ -52,20 +22,15 @@ class SetCriterion(nn.Module):
         2) we supervise each pair of matched ground-truth / prediction (supervise class, box and mask)
     """
 
-    def __init__(self, cfg, num_classes, matcher, eos_coef):
+    def __init__(self, cfg, num_classes):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
-            matcher: module able to compute a matching between targets and proposals
-            eos_coef: relative classification weight applied to the no-object category
         """
         super().__init__()
         self.cfg = cfg
         self.num_classes = num_classes
-        self.matcher = matcher
-        self.eos_coef = eos_coef
-        self.weight_nums = [64, 64, 8]
-        self.bias_nums = [8, 8, 1]
+        self.matcher = HungarianMatcher()
 
     def loss_labels(self, outputs, targets, indices):
         """Classification loss (NLL)
@@ -145,7 +110,6 @@ class SetCriterion(nn.Module):
                                   reduction='none')
             losses['loss_bbox'] = loss_bbox.sum() / num_boxes
 
-            # loss_giou = giou_loss(box_ops.box_cxcywh_to_xyxy(src_boxes), box_ops.box_cxcywh_to_xyxy(target_boxes))
             loss_giou = 1 - torch.diag(generalized_box_iou(src_boxes, target_boxes_abs_xyxy))
             losses['loss_giou'] = loss_giou.sum() / num_boxes
         else:
@@ -155,11 +119,7 @@ class SetCriterion(nn.Module):
         return losses
 
     def loss_masks(self, outputs, targets, indices):
-        assert 'pred_kernels' in outputs
-        assert 'mask_feat' in outputs
-
-        src_kernels = outputs['pred_kernels']
-        mask_feats = outputs['mask_feat']
+        pred_masks = outputs['pred_masks']
 
         batch_size = len(targets)
         loss_mask = 0
@@ -169,37 +129,20 @@ class SetCriterion(nn.Module):
             gt_multi_idx = indices[batch_idx][1]
             if len(gt_multi_idx) == 0:
                 continue
-            mask_feat = mask_feats[batch_idx]
-            bz_src_kernel = src_kernels[batch_idx]
+            pred_masks = pred_masks[batch_idx]
             bz_target_mask = targets[batch_idx]["masks"]
-            mask_head_params = bz_src_kernel[valid_query]
-            gt_masks = bz_target_mask[gt_multi_idx].tensor
+            pred_masks = pred_masks[valid_query]
+            gt_masks = bz_target_mask[gt_multi_idx]
 
-            if len(mask_head_params) > 0:
-                num_instance = len(mask_head_params)
-                weights, biases = parse_dynamic_params(
-                    mask_head_params,
-                    8,
-                    self.weight_nums,
-                    self.bias_nums)
-
-                mask_feat_head = mask_feat.unsqueeze(0).repeat(1, num_instance, 1, 1)
-                mask_logits = self.mask_heads_forward(
-                    mask_feat_head,
-                    weights,
-                    biases,
-                    num_instance)
-
-                mask_logits = mask_logits.reshape(-1, 1, mask_feat.size(1), mask_feat.size(2)).squeeze(1)
-
-                img_h, img_w = mask_feat.size(1) * 8, mask_feat.size(2) * 8
+            if len(pred_masks) > 0:
+                img_h, img_w = pred_masks.size(1) * 8, pred_masks.size(2) * 8
                 h, w = gt_masks.size()[1:]
                 gt_masks = F.pad(gt_masks, (0, img_w - w, 0, img_h - h), "constant", 0)
                 start = int(4 // 2)
                 gt_masks = gt_masks[:, start::8, start::8]
                 gt_masks = gt_masks.gt(0.5).float()
 
-                loss_mask += dice_coefficient(mask_logits.sigmoid(), gt_masks).sum()
+                loss_mask += dice_coefficient(pred_masks, gt_masks).sum()
                 num_mask += len(gt_multi_idx)
 
         if num_mask > 0:
@@ -210,15 +153,6 @@ class SetCriterion(nn.Module):
 
         return losses
 
-    def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
-        loss_map = {
-            'labels': self.loss_labels,
-            'boxes': self.loss_boxes,
-            'mask': self.loss_masks,
-        }
-        assert loss in loss_map, f'do you really want to compute {loss} loss?'
-        return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
-
     def forward(self, outputs, targets):
         """ This performs the loss computation.
         Parameters:
@@ -226,23 +160,13 @@ class SetCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
-
-        # Retrieve the matching between the outputs of the last layer and the targets
-        indices, _ = self.matcher(outputs_without_aux, targets)
-
-        # Compute the average number of target boxes accross all nodes, for normalization purposes
-        num_boxes = sum(len(t["labels"]) for t in targets)
-        num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
-        if dist.is_available() and dist.is_initialized():
-            dist.all_reduce(num_boxes)
-        world_size = 1 if not (dist.is_available() and dist.is_initialized()) else dist.get_world_size()
-        num_boxes = torch.clamp(num_boxes / world_size, min=1).item()
-
-        # Compute all the requested losses
+        # retrieve the matching between the outputs of the last layer and the targets
+        indices, _ = self.matcher(outputs, targets)
+        # compute all the requested losses
         losses = {}
-        for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
+        losses.update(self.loss_labels(outputs, targets, indices))
+        losses.update(self.loss_boxes(outputs, targets, indices))
+        losses.update(self.loss_masks(outputs, targets, indices))
         return losses
 
 
@@ -253,8 +177,7 @@ class HungarianMatcher(nn.Module):
     while the others are un-matched (and thus treated as non-objects).
     """
 
-    def __init__(self, cfg, cost_class: float = 1, cost_bbox: float = 1, cost_giou: float = 1, cost_mask: float = 1,
-                 use_focal: bool = False):
+    def __init__(self, cost_class: float = 1, cost_bbox: float = 1, cost_giou: float = 1, cost_mask: float = 1):
         """Creates the matcher
         Params:
             cost_class: This is the relative weight of the classification error in the matching cost
@@ -265,44 +188,28 @@ class HungarianMatcher(nn.Module):
         self.cost_class = cost_class
         self.cost_bbox = cost_bbox
         self.cost_giou = cost_giou
-        self.ota_k = cfg.MODEL.DiffusionInst.OTA_K
-        assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
+        self.cost_mask = cost_mask
 
     def forward(self, outputs, targets):
-        """ simOTA for detr"""
         with torch.no_grad():
             bs, num_queries = outputs["pred_logits"].shape[:2]
-            # We flatten to compute the cost matrices in a batch
-            out_prob = outputs["pred_logits"].sigmoid()  # [batch_size, num_queries, num_classes]
-            out_bbox = outputs["pred_boxes"]  # [batch_size,  num_queries, 4]
+            out_prob = outputs["pred_logits"]
+            out_bbox = outputs["pred_boxes"]
 
-            indices = []
-            matched_ids = []
-            assert bs == len(targets)
+            indices, matched_ids = [], []
             for batch_idx in range(bs):
-                bz_boxes = out_bbox[batch_idx]  # [num_proposals, 4]
                 bz_out_prob = out_prob[batch_idx]
-                bz_tgt_ids = targets[batch_idx]["labels"]
-                num_insts = len(bz_tgt_ids)
-                if num_insts == 0:  # empty object in key frame
-                    non_valid = torch.zeros(bz_out_prob.shape[0]).to(bz_out_prob) > 0
-                    indices_batchi = (non_valid, torch.arange(0, 0).to(bz_out_prob))
-                    matched_qidx = torch.arange(0, 0).to(bz_out_prob)
-                    indices.append(indices_batchi)
-                    matched_ids.append(matched_qidx)
-                    continue
-
-                bz_gtboxs = targets[batch_idx]['boxes']  # [num_gt, 4] normalized (cx, xy, w, h)
-                bz_gtboxs_abs_xyxy = targets[batch_idx]['boxes_xyxy']
+                bz_boxes = out_bbox[batch_idx]  # [num_proposals, 4]
+                bz_tgt_ids = targets[batch_idx]["gt_classes"]
+                bz_gtboxs = targets[batch_idx]['gt_boxes']  # [num_gt, 4] (x, y, x, y)
                 fg_mask, is_in_boxes_and_center = self.get_in_boxes_info(
-                    box_convert(bz_boxes, in_fmt="xyxy", out_fmt="cxcywh"),  # absolute (cx, cy, w, h)
-                    box_convert(bz_gtboxs_abs_xyxy, in_fmt="xyxy", out_fmt="cxcywh"),  # absolute (cx, cy, w, h)
-                    expanded_strides=32
+                    bz_boxes,  # absolute (cx, cy, w, h)
+                    bz_gtboxs,  # absolute (x, y, x, y)
                 )
 
-                pair_wise_ious = ops.box_iou(bz_boxes, bz_gtboxs_abs_xyxy)
+                pair_wise_ious = box_iou(bz_boxes, bz_gtboxs)
 
-                # Compute the classification cost.
+                # compute the classification cost
                 alpha = self.focal_loss_alpha
                 gamma = self.focal_loss_gamma
                 neg_cost_class = (1 - alpha) * (bz_out_prob ** gamma) * (-(1 - bz_out_prob + 1e-8).log())
@@ -313,15 +220,14 @@ class HungarianMatcher(nn.Module):
                 bz_image_size_tgt = targets[batch_idx]['image_size_xyxy_tgt']
 
                 bz_out_bbox_ = bz_boxes / bz_image_size_out  # normalize (x1, y1, x2, y2)
-                bz_tgt_bbox_ = bz_gtboxs_abs_xyxy / bz_image_size_tgt  # normalize (x1, y1, x2, y2)
+                bz_tgt_bbox_ = bz_gtboxs / bz_image_size_tgt  # normalize (x1, y1, x2, y2)
                 cost_bbox = torch.cdist(bz_out_bbox_, bz_tgt_bbox_, p=1)
 
-                cost_giou = -generalized_box_iou(bz_boxes, bz_gtboxs_abs_xyxy)
+                cost_giou = -generalized_box_iou(bz_boxes, bz_gtboxs)
 
                 # Final cost matrix
                 cost = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou + 100.0 * (
                     ~is_in_boxes_and_center)
-                # cost = (cost_class + 3.0 * cost_giou + 100.0 * (~is_in_boxes_and_center))  # [num_query,num_gt]
                 cost[~fg_mask] = cost[~fg_mask] + 10000.0
 
                 # if bz_gtboxs.shape[0]>0:
@@ -331,83 +237,3 @@ class HungarianMatcher(nn.Module):
                 matched_ids.append(matched_qidx)
 
         return indices, matched_ids
-
-    def get_in_boxes_info(self, boxes, target_gts, expanded_strides):
-        xy_target_gts = _box_cxcywh_to_xyxy(target_gts)  # (x1, y1, x2, y2)
-
-        anchor_center_x = boxes[:, 0].unsqueeze(1)
-        anchor_center_y = boxes[:, 1].unsqueeze(1)
-
-        # whether the center of each anchor is inside a gt box
-        b_l = anchor_center_x > xy_target_gts[:, 0].unsqueeze(0)
-        b_r = anchor_center_x < xy_target_gts[:, 2].unsqueeze(0)
-        b_t = anchor_center_y > xy_target_gts[:, 1].unsqueeze(0)
-        b_b = anchor_center_y < xy_target_gts[:, 3].unsqueeze(0)
-        # (b_l.long()+b_r.long()+b_t.long()+b_b.long())==4 [300,num_gt] ,
-        is_in_boxes = ((b_l.long() + b_r.long() + b_t.long() + b_b.long()) == 4)
-        is_in_boxes_all = is_in_boxes.sum(1) > 0  # [num_query]
-        # in fixed center
-        center_radius = 2.5
-        # Modified to self-adapted sampling --- the center size depends on the size of the gt boxes
-        # https://github.com/dulucas/UVO_Challenge/blob/main/Track1/detection/mmdet/core/bbox/assigners/rpn_sim_ota_assigner.py#L212
-        b_l = anchor_center_x > (
-                target_gts[:, 0] - (center_radius * (xy_target_gts[:, 2] - xy_target_gts[:, 0]))).unsqueeze(0)
-        b_r = anchor_center_x < (
-                target_gts[:, 0] + (center_radius * (xy_target_gts[:, 2] - xy_target_gts[:, 0]))).unsqueeze(0)
-        b_t = anchor_center_y > (
-                target_gts[:, 1] - (center_radius * (xy_target_gts[:, 3] - xy_target_gts[:, 1]))).unsqueeze(0)
-        b_b = anchor_center_y < (
-                target_gts[:, 1] + (center_radius * (xy_target_gts[:, 3] - xy_target_gts[:, 1]))).unsqueeze(0)
-
-        is_in_centers = ((b_l.long() + b_r.long() + b_t.long() + b_b.long()) == 4)
-        is_in_centers_all = is_in_centers.sum(1) > 0
-
-        is_in_boxes_anchor = is_in_boxes_all | is_in_centers_all
-        is_in_boxes_and_center = (is_in_boxes & is_in_centers)
-
-        return is_in_boxes_anchor, is_in_boxes_and_center
-
-    def dynamic_k_matching(self, cost, pair_wise_ious, num_gt):
-        matching_matrix = torch.zeros_like(cost)  # [300,num_gt]
-        ious_in_boxes_matrix = pair_wise_ious
-        n_candidate_k = self.ota_k
-
-        # Take the sum of the predicted value and the top 10 iou of gt with the largest iou as dynamic_k
-        topk_ious, _ = torch.topk(ious_in_boxes_matrix, n_candidate_k, dim=0)
-        dynamic_ks = torch.clamp(topk_ious.sum(0).int(), min=1)
-
-        for gt_idx in range(num_gt):
-            _, pos_idx = torch.topk(cost[:, gt_idx], k=dynamic_ks[gt_idx].item(), largest=False)
-            matching_matrix[:, gt_idx][pos_idx] = 1.0
-
-        del topk_ious, dynamic_ks, pos_idx
-
-        anchor_matching_gt = matching_matrix.sum(1)
-
-        if (anchor_matching_gt > 1).sum() > 0:
-            _, cost_argmin = torch.min(cost[anchor_matching_gt > 1], dim=1)
-            matching_matrix[anchor_matching_gt > 1] *= 0
-            matching_matrix[anchor_matching_gt > 1, cost_argmin,] = 1
-
-        while (matching_matrix.sum(0) == 0).any():
-            matched_query_id = matching_matrix.sum(1) > 0
-            cost[matched_query_id] += 100000.0
-            unmatch_id = torch.nonzero(matching_matrix.sum(0) == 0, as_tuple=False).squeeze(1)
-            for gt_idx in unmatch_id:
-                pos_idx = torch.argmin(cost[:, gt_idx])
-                matching_matrix[:, gt_idx][pos_idx] = 1.0
-            if (matching_matrix.sum(1) > 1).sum() > 0:  # If a query matches more than one gt
-                _, cost_argmin = torch.min(cost[anchor_matching_gt > 1],
-                                           dim=1)  # find gt for these queries with minimal cost
-                matching_matrix[anchor_matching_gt > 1] *= 0  # reset mapping relationship
-                matching_matrix[anchor_matching_gt > 1, cost_argmin,] = 1  # keep gt with minimal cost
-
-        assert not (matching_matrix.sum(0) == 0).any()
-        selected_query = matching_matrix.sum(1) > 0
-        gt_indices = matching_matrix[selected_query].max(1)[1]
-        assert selected_query.sum() == len(gt_indices)
-
-        cost[matching_matrix == 0] = cost[matching_matrix == 0] + float('inf')
-        matched_query_id = torch.min(cost, dim=0)[1]
-
-        return (selected_query, gt_indices), matched_query_id

@@ -1,8 +1,43 @@
 import math
 import torch
+import torch.nn.functional as F
+from detectron2.modeling.box_regression import Box2BoxTransform
 from torch import nn
 
-from .utils import aligned_bilinear, apply_deltas
+
+def cosine_schedule(num_steps, s=0.008):
+    """
+    as proposed in Improved Denoising Diffusion Probabilistic Models
+    """
+    t = torch.linspace(0, num_steps, num_steps + 1)
+    f_t = torch.cos(((t / num_steps) + s) / (1 + s) * math.pi * 0.5) ** 2
+    alpha_cumprod_t = f_t / f_t[0]
+    beta_t = 1 - (alpha_cumprod_t[1:] / alpha_cumprod_t[:-1])
+    return torch.clip(beta_t, 0, 0.999)
+
+
+def parse_dynamic_params(params, channels, weight_nums, bias_nums):
+    num_instances = params.size(0)
+    num_layers = len(weight_nums)
+
+    params_splits = list(
+        torch.split_with_sizes(params, weight_nums + bias_nums, dim=1))
+
+    weight_splits = params_splits[:num_layers]
+    bias_splits = params_splits[num_layers:]
+
+    for l in range(num_layers):
+        if l < num_layers - 1:
+            # out_channels x in_channels x 1 x 1
+            weight_splits[l] = weight_splits[l].reshape(
+                num_instances * channels, -1, 1, 1)
+            bias_splits[l] = bias_splits[l].reshape(num_instances * channels)
+        else:
+            # out_channels x in_channels x 1 x 1
+            weight_splits[l] = weight_splits[l].reshape(
+                num_instances * 1, -1, 1, 1)
+            bias_splits[l] = bias_splits[l].reshape(num_instances)
+    return weight_splits, bias_splits
 
 
 class DynamicGuide(nn.Module):
@@ -82,6 +117,7 @@ class DetectHead(nn.Module):
                                        nn.ReLU(inplace=True))
         self.class_logits = nn.Linear(hidden_dim, num_classes)
         self.boxes_delta = nn.Linear(hidden_dim, 4)
+        self.transform = Box2BoxTransform(weights=(2.0, 2.0, 1.0, 1.0))
 
     def forward(self, roi_features, ts, boxes):
         detect_features = self.dynamic_guide(roi_features)
@@ -96,9 +132,9 @@ class DetectHead(nn.Module):
 
         cls_feature = self.cls_layer(fc_feature)
         reg_feature = self.reg_layer(fc_feature)
-        pred_logits = self.class_logits(cls_feature)
+        pred_logits = torch.sigmoid(self.class_logits(cls_feature))
         boxes_deltas = self.boxes_delta(reg_feature)
-        pred_boxes = apply_deltas(boxes_deltas, boxes.view(-1, 4))
+        pred_boxes = self.transform.apply_deltas(boxes_deltas, boxes.view(-1, 4))
         return pred_logits, pred_boxes
 
 
@@ -106,23 +142,49 @@ class MaskHead(nn.Module):
     def __init__(self, cfg, hidden_dim):
         super().__init__()
         in_features = cfg.MODEL.ROI_HEADS.IN_FEATURES
+        self.num_proposals = cfg.MODEL.DiffusionInst.NUM_PROPOSALS
         self.mask_refine = nn.ModuleList([nn.Sequential(nn.Conv2d(hidden_dim, 128, 3, stride=1, padding=1, bias=False),
                                                         nn.BatchNorm2d(128), nn.ReLU()) for _ in in_features])
         mask_tower = [nn.Sequential(nn.Conv2d(128, 128, 3, stride=1, padding=1, bias=False), nn.BatchNorm2d(128),
                                     nn.ReLU()) for _ in range(4)]
         mask_tower.append(nn.Conv2d(128, 8, kernel_size=1, stride=1))
         self.mask_tower = nn.Sequential(*mask_tower)
+        self.dynamic_guide = DynamicGuide(cfg, hidden_dim)
+        self.dynamic_conv = DynamicConv(cfg, hidden_dim)
+        self.linear1 = nn.Linear(hidden_dim, hidden_dim * 4)
+        self.linear2 = nn.Linear(hidden_dim * 4, hidden_dim)
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.relu = nn.ReLU(inplace=True)
+        self.weight_nums = [64, 64, 8]
+        self.bias_nums = [8, 8, 1]
+        self.controller = nn.Linear(hidden_dim, sum(self.weight_nums) + sum(self.bias_nums))
 
-    def forward(self, features):
+    def forward(self, roi_features, features):
         for i, x in enumerate(features):
             if i == 0:
                 mask_feat = self.mask_refine[i](x)
+                target_h, target_w = mask_feat.size()[2:]
             else:
                 x_p = self.mask_refine[i](x)
-                target_h, target_w = mask_feat.size()[2:]
-                h, w = x_p.size()[2:]
-                factor_h, factor_w = target_h // h, target_w // w
-                x_p = aligned_bilinear(x_p, factor_h)
+                x_p = F.interpolate(x_p, size=(target_h, target_w), mode='bilinear', align_corners=True)
                 mask_feat = mask_feat + x_p
-        pred_masks = self.mask_tower(mask_feat)
+        mask_feat = self.mask_tower(mask_feat)
+
+        mask_features = self.dynamic_guide(roi_features)
+        mixed_features = self.dynamic_conv(mask_features, roi_features)
+        obj_features = self.norm1(mask_features + mixed_features)
+        obj_features = self.norm2(obj_features + self.linear2(self.relu(self.linear1(obj_features))))
+        mask_head_params = self.controller(obj_features)
+        weights, biases = parse_dynamic_params(mask_head_params, 8, self.weight_nums, self.bias_nums)
+        mask_feat_head = mask_feat.unsqueeze(0).repeat(1, self.num_proposals, 1, 1)
+
+        n_layers = len(weights)
+        x = mask_feat_head
+        for i, (w, b) in enumerate(zip(weights, biases)):
+            x = F.conv2d(x, w, bias=b, stride=1, padding=0, groups=self.num_proposals)
+            if i < n_layers - 1:
+                x = F.relu(x)
+        mask_logits = x
+        pred_masks = mask_logits.reshape(-1, 1, mask_feat.size(1), mask_feat.size(2)).squeeze(1).sigmoid()
         return pred_masks
