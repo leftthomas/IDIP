@@ -1,8 +1,8 @@
-from detectron2.config import CfgNode as CN
+from detectron2.config import CfgNode
 
 
 def add_diffusioninst_config(cfg):
-    cfg.MODEL.DiffusionInst = CN()
+    cfg.MODEL.DiffusionInst = CfgNode()
     cfg.MODEL.DiffusionInst.NUM_CLASSES = 80
     cfg.MODEL.DiffusionInst.NUM_PROPOSALS = 300
 

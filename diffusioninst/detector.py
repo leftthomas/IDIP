@@ -120,7 +120,7 @@ class DiffusionInst(nn.Module):
         num_gt = len(gt_boxes)
         if num_gt < self.num_proposals:
             # ref DiffusionDet: Diffusion Model for Object Detection
-            box_placeholder = torch.randn(self.num_proposals - num_gt, 4, device=self.device) / 6 + 0.5
+            box_placeholder = torch.randn(self.num_proposals - num_gt, 4, device=self.device).div(6).add(0.5)
             box_placeholder = torch.clamp(box_placeholder, min=0, max=1)
             box_placeholder[:, 2:] = torch.clamp(box_placeholder[:, 2:], min=1e-4, max=1.0)
             box_placeholder = box_convert(box_placeholder, in_fmt='cxcywh', out_fmt='xyxy')

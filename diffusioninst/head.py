@@ -11,7 +11,7 @@ def cosine_schedule(num_steps, s=0.008):
     f_t = torch.cos(((t / num_steps) + s) / (1 + s) * math.pi * 0.5) ** 2
     alpha_cumprod_t = f_t / f_t[0]
     beta_t = 1 - (alpha_cumprod_t[1:] / alpha_cumprod_t[:-1])
-    return torch.clip(beta_t, 0, 0.999)
+    return torch.clamp(beta_t, min=0, max=0.999)
 
 
 def parse_dynamic_params(params, channels, weight_nums, bias_nums):

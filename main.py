@@ -97,29 +97,29 @@ class Trainer(DefaultTrainer):
         return optimizer
 
 
-def setup(args):
+def setup(arg):
     cfg = get_cfg()
     add_diffusioninst_config(cfg)
-    cfg.merge_from_file(args.config_file)
-    cfg.merge_from_list(args.opts)
+    cfg.merge_from_file(arg.config_file)
+    cfg.merge_from_list(arg.opts)
     cfg.freeze()
-    default_setup(cfg, args)
+    default_setup(cfg, arg)
     return cfg
 
 
-def main(args):
-    cfg = setup(args)
+def main(arg):
+    cfg = setup(arg)
 
-    if args.eval_only:
+    if arg.eval_only:
         model = Trainer.build_model(cfg)
-        DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(cfg.MODEL.WEIGHTS, resume=args.resume)
+        DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(cfg.MODEL.WEIGHTS, resume=arg.resume)
         res = Trainer.test(cfg, model)
         if comm.is_main_process():
             verify_results(cfg, res)
         return res
 
     trainer = Trainer(cfg)
-    trainer.resume_or_load(resume=args.resume)
+    trainer.resume_or_load(resume=arg.resume)
     return trainer.train()
 
 
