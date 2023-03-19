@@ -70,12 +70,13 @@ class DiffusionInst(nn.Module):
         features = [src[f] for f in self.in_features]
 
         if self.training:
-            # [B], [B, N, 4], [B, N, 4], [B]
+            # [B], [B, N, 4], [B, N, 4], [B, 1]
             targets, boxes, noises, ts = self.preprocess_target(batched_inputs)
-            # [B*N, D, S*S]
             roi_features = torch.flatten(self.pooler(features, [Boxes(b) for b in boxes]), start_dim=-2)
+            # [B, N, D, S*S]
+            roi_features = roi_features.view(len(targets), self.num_proposals, self.dim_features, -1)
             pred_logits, pred_boxes = self.detect_head(roi_features, ts, boxes)
-            pred_masks = self.mask_head(roi_features, features)
+            pred_masks = self.mask_head(roi_features, ts)
             pred_logits = pred_logits.view(-1, self.num_proposals, self.num_classes)
             pred_boxes = pred_boxes.view(-1, self.num_proposals, 4)
             output = {'pred_logits': pred_logits, 'pred_boxes': pred_boxes, 'pred_masks': pred_masks}
@@ -108,7 +109,7 @@ class DiffusionInst(nn.Module):
 
             targets.append({'gt_classes': gt_classes, 'gt_boxes': gt_boxes, 'gt_masks': gt_masks})
 
-        return targets, torch.stack(diffused_boxes), torch.stack(noises), torch.stack(ts).squeeze(-1)
+        return targets, torch.stack(diffused_boxes), torch.stack(noises), torch.stack(ts)
 
     def prepare_diffusion(self, gt_boxes, image_size):
         # normalize to relative coordinates, and use cxcywh format
