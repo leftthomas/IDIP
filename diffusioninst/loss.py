@@ -21,20 +21,14 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class, box and mask)
     """
-
-    def __init__(self, cfg, num_classes):
-        """ Create the criterion.
-        Parameters:
-            num_classes: number of object categories, omitting the special no-object category
-        """
+    def __init__(self, cfg):
         super().__init__()
-        self.cfg = cfg
-        self.num_classes = num_classes
+        self.num_classes = cfg.MODEL.DiffusionInst.NUM_CLASSES
         self.matcher = HungarianMatcher()
 
     def loss_labels(self, outputs, targets, indices):
         """Classification loss (NLL)
-        targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
+        targets dicts must contain the key 'labels' containing a tensor of dim [nb_target_boxes]
         """
         src_logits = outputs['pred_logits']
         batch_size = len(targets)
@@ -48,7 +42,7 @@ class SetCriterion(nn.Module):
             if len(gt_multi_idx) == 0:
                 continue
             bz_src_logits = src_logits[batch_idx]
-            target_classes_o = targets[batch_idx]["labels"]
+            target_classes_o = targets[batch_idx]['labels']
             target_classes[batch_idx, valid_query] = target_classes_o[gt_multi_idx]
 
             src_logits_list.append(bz_src_logits[valid_query])
@@ -73,7 +67,7 @@ class SetCriterion(nn.Module):
 
     def loss_boxes(self, outputs, targets, indices):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
-           targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
+           targets dicts must contain the key 'boxes' containing a tensor of dim [nb_target_boxes, 4]
            The target boxes are expected in format (center_x, center_y, w, h), normalized by the image size.
         """
         src_boxes = outputs['pred_boxes']
@@ -90,8 +84,8 @@ class SetCriterion(nn.Module):
                 continue
             bz_image_whwh = targets[batch_idx]['image_size_xyxy']
             bz_src_boxes = src_boxes[batch_idx]
-            bz_target_boxes = targets[batch_idx]["boxes"]  # normalized (cx, cy, w, h)
-            bz_target_boxes_xyxy = targets[batch_idx]["boxes_xyxy"]  # absolute (x1, y1, x2, y2)
+            bz_target_boxes = targets[batch_idx]['boxes']  # normalized (cx, cy, w, h)
+            bz_target_boxes_xyxy = targets[batch_idx]['boxes_xyxy']  # absolute (x1, y1, x2, y2)
             pred_box_list.append(bz_src_boxes[valid_query])
             pred_norm_box_list.append(bz_src_boxes[valid_query] / bz_image_whwh)  # normalize (x1, y1, x2, y2)
             tgt_box_list.append(bz_target_boxes[gt_multi_idx])
@@ -106,7 +100,7 @@ class SetCriterion(nn.Module):
 
             losses = {}
             # require normalized (x1, y1, x2, y2)
-            loss_bbox = F.l1_loss(src_boxes_norm, box_convert(target_boxes, in_fmt="cxcywh", out_fmt="xyxy"),
+            loss_bbox = F.l1_loss(src_boxes_norm, box_convert(target_boxes, in_fmt='cxcywh', out_fmt='xyxy'),
                                   reduction='none')
             losses['loss_bbox'] = loss_bbox.sum() / num_boxes
 
@@ -130,14 +124,14 @@ class SetCriterion(nn.Module):
             if len(gt_multi_idx) == 0:
                 continue
             pred_masks = pred_masks[batch_idx]
-            bz_target_mask = targets[batch_idx]["masks"]
+            bz_target_mask = targets[batch_idx]['masks']
             pred_masks = pred_masks[valid_query]
             gt_masks = bz_target_mask[gt_multi_idx]
 
             if len(pred_masks) > 0:
                 img_h, img_w = pred_masks.size(1) * 8, pred_masks.size(2) * 8
                 h, w = gt_masks.size()[1:]
-                gt_masks = F.pad(gt_masks, (0, img_w - w, 0, img_h - h), "constant", 0)
+                gt_masks = F.pad(gt_masks, (0, img_w - w, 0, img_h - h), 'constant', 0)
                 start = int(4 // 2)
                 gt_masks = gt_masks[:, start::8, start::8]
                 gt_masks = gt_masks.gt(0.5).float()
@@ -192,15 +186,15 @@ class HungarianMatcher(nn.Module):
 
     def forward(self, outputs, targets):
         with torch.no_grad():
-            bs, num_queries = outputs["pred_logits"].shape[:2]
-            out_prob = outputs["pred_logits"]
-            out_bbox = outputs["pred_boxes"]
+            bs, num_queries = outputs['pred_logits'].shape[:2]
+            out_prob = outputs['pred_logits']
+            out_bbox = outputs['pred_boxes']
 
             indices, matched_ids = [], []
             for batch_idx in range(bs):
                 bz_out_prob = out_prob[batch_idx]
                 bz_boxes = out_bbox[batch_idx]  # [num_proposals, 4]
-                bz_tgt_ids = targets[batch_idx]["gt_classes"]
+                bz_tgt_ids = targets[batch_idx]['gt_classes']
                 bz_gtboxs = targets[batch_idx]['gt_boxes']  # [num_gt, 4] (x, y, x, y)
                 fg_mask, is_in_boxes_and_center = self.get_in_boxes_info(
                     bz_boxes,  # absolute (cx, cy, w, h)

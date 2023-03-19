@@ -1,19 +1,19 @@
 MODEL:
-  META_ARCHITECTURE: "DiffusionInst"
+  META_ARCHITECTURE: 'DiffusionInst'
   MASK_ON: True
   PIXEL_MEAN: [ 123.675, 116.280, 103.530 ]
   PIXEL_STD: [ 58.395, 57.120, 57.375 ]
   BACKBONE:
-    NAME: "build_resnet_fpn_backbone"
+    NAME: 'build_resnet_fpn_backbone'
   RESNETS:
-    OUT_FEATURES: [ "res3", "res4", "res5" ]
+    OUT_FEATURES: [ 'res3', 'res4', 'res5' ]
     STRIDE_IN_1X1: False
   FPN:
-    IN_FEATURES: [ "res3", "res4", "res5" ]
+    IN_FEATURES: [ 'res3', 'res4', 'res5' ]
   ROI_HEADS:
-    IN_FEATURES: [ "p3", "p4", "p5" ]
+    IN_FEATURES: [ 'p3', 'p4', 'p5' ]
   ROI_BOX_HEAD:
-    POOLER_TYPE: "ROIAlignV2"
+    POOLER_TYPE: 'ROIAlignV2'
     POOLER_RESOLUTION: 14
     POOLER_SAMPLING_RATIO: 2
   DiffusionInst:
@@ -21,25 +21,25 @@ MODEL:
     NUM_CLASSES: 80
 SOLVER:
   WARMUP_FACTOR: 0.01
-  OPTIMIZER: "ADAMW"
+  OPTIMIZER: 'ADAMW'
   IMS_PER_BATCH: 32
   BASE_LR: 0.000025
   STEPS: (210000, 250000)
   MAX_ITER: 270000
   CLIP_GRADIENTS:
     ENABLED: True
-    CLIP_TYPE: "full_model"
+    CLIP_TYPE: 'full_model'
 DATASETS:
-  TRAIN: ("coco_2017_train",)
-  TEST: ("coco_2017_val",)
+  TRAIN: ('coco_2017_train',)
+  TEST: ('coco_2017_val',)
 SEED: 42
 INPUT:
   MIN_SIZE_TRAIN: (416, 448, 480, 512, 544, 576, 608, 640)
   MAX_SIZE_TRAIN: 853
   MIN_SIZE_TEST: 640
   MAX_SIZE_TEST: 853
-  FORMAT: "RGB"
-  MASK_FORMAT: "bitmask"
+  FORMAT: 'RGB'
+  MASK_FORMAT: 'bitmask'
 TEST:
   EVAL_PERIOD: 10000
 VERSION: 2

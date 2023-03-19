@@ -6,9 +6,7 @@ from torch import nn
 
 
 def cosine_schedule(num_steps, s=0.008):
-    """
-    as proposed in Improved Denoising Diffusion Probabilistic Models
-    """
+    # ref Improved Denoising Diffusion Probabilistic Models
     t = torch.linspace(0, num_steps, num_steps + 1)
     f_t = torch.cos(((t / num_steps) + s) / (1 + s) * math.pi * 0.5) ** 2
     alpha_cumprod_t = f_t / f_t[0]
@@ -68,10 +66,6 @@ class DynamicConv(nn.Module):
         self.norm3 = nn.LayerNorm(self.hidden_dim)
 
     def forward(self, guide_features, roi_features):
-        """
-        guide_features: (N * nr_boxes, hidden_dim)
-        roi_features: (N * nr_boxes, hidden_dim, S*S)
-        """
         parameters = self.linear1(guide_features)
         param1 = parameters[:, :self.num_params].view(-1, self.hidden_dim, self.hidden_dim // 4)
         param2 = parameters[:, self.num_params:].view(-1, self.hidden_dim // 4, self.hidden_dim)

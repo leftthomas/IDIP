@@ -10,7 +10,7 @@ from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
 from detectron2.engine import DefaultTrainer, default_argument_parser, default_setup, launch, create_ddp_model, \
     SimpleTrainer
-from detectron2.evaluation import COCOEvaluator, LVISEvaluator, verify_results
+from detectron2.evaluation import COCOEvaluator, verify_results
 from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.utils.logger import setup_logger
 
@@ -18,15 +18,9 @@ from diffusioninst import add_diffusioninst_config
 
 
 class Trainer(DefaultTrainer):
-    """ Extension of the Trainer class adapted to DiffusionInst. """
-
     def __init__(self, cfg):
-        """
-        Args:
-            cfg (CfgNode):
-        """
         super(DefaultTrainer, self).__init__()
-        logger = logging.getLogger("detectron2")
+        logger = logging.getLogger('detectron2')
         if not logger.isEnabledFor(logging.INFO):
             setup_logger()
         cfg = DefaultTrainer.auto_scale_workers(cfg, comm.get_world_size())
@@ -46,17 +40,12 @@ class Trainer(DefaultTrainer):
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
-        """
-        Create evaluator(s) for a given dataset.
-        This uses the special metadata "evaluator_type" associated with each builtin dataset.
-        For your own dataset, you can simply create an evaluator manually in your
-        """
         if output_folder is None:
-            output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
-        if "lvis" in dataset_name:
-            return LVISEvaluator(dataset_name, cfg, True, output_folder)
-        else:
+            output_folder = os.path.join(cfg.OUTPUT_DIR, 'inference')
+        if 'coco' in dataset_name:
             return COCOEvaluator(dataset_name, cfg, True, output_folder)
+        else:
+            raise NotImplementedError('{} not supported yet'.format(dataset_name))
 
     @classmethod
     def build_optimizer(cls, cfg, model):
@@ -71,47 +60,44 @@ class Trainer(DefaultTrainer):
             memo.add(value)
             lr = cfg.SOLVER.BASE_LR
             weight_decay = cfg.SOLVER.WEIGHT_DECAY
-            if "backbone" in key:
+            if 'backbone' in key:
                 lr = lr * cfg.SOLVER.BACKBONE_MULTIPLIER
-            params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
+            params += [{'params': [value], 'lr': lr, 'weight_decay': weight_decay}]
 
         def maybe_add_full_model_gradient_clipping(optim):
             # detectron2 doesn't have full model gradient clipping now
             clip_norm_val = cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE
             enable = (
                     cfg.SOLVER.CLIP_GRADIENTS.ENABLED
-                    and cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE == "full_model"
+                    and cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE == 'full_model'
                     and clip_norm_val > 0.0
             )
 
             class FullModelGradientClippingOptimizer(optim):
                 def step(self, closure=None):
-                    all_params = itertools.chain(*[x["params"] for x in self.param_groups])
+                    all_params = itertools.chain(*[x['params'] for x in self.param_groups])
                     torch.nn.utils.clip_grad_norm_(all_params, clip_norm_val)
                     super().step(closure=closure)
 
             return FullModelGradientClippingOptimizer if enable else optim
 
         optimizer_type = cfg.SOLVER.OPTIMIZER
-        if optimizer_type == "SGD":
+        if optimizer_type == 'SGD':
             optimizer = maybe_add_full_model_gradient_clipping(torch.optim.SGD)(
                 params, cfg.SOLVER.BASE_LR, momentum=cfg.SOLVER.MOMENTUM
             )
-        elif optimizer_type == "ADAMW":
+        elif optimizer_type == 'ADAMW':
             optimizer = maybe_add_full_model_gradient_clipping(torch.optim.AdamW)(
                 params, cfg.SOLVER.BASE_LR
             )
         else:
-            raise NotImplementedError(f"no optimizer type {optimizer_type}")
-        if not cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE == "full_model":
+            raise NotImplementedError('no optimizer type {}'.format(optimizer_type))
+        if not cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE == 'full_model':
             optimizer = maybe_add_gradient_clipping(cfg, optimizer)
         return optimizer
 
 
 def setup(args):
-    """
-    Create configs and perform basic setups.
-    """
     cfg = get_cfg()
     add_diffusioninst_config(cfg)
     cfg.merge_from_file(args.config_file)
@@ -137,9 +123,9 @@ def main(args):
     return trainer.train()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     args = default_argument_parser().parse_args()
-    print("Command Line Args:", args)
+    print('Command Line Args:', args)
     launch(
         main,
         args.num_gpus,
