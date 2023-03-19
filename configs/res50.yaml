@@ -1,11 +1,11 @@
-_BASE_: "base.yaml"
+_BASE_: 'base.yaml'
 MODEL:
-  WEIGHTS: "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
+  WEIGHTS: 'detectron2://ImageNetPretrained/torchvision/R-50.pkl'
   RESNETS:
     DEPTH: 50
 SOLVER:
-  IMS_PER_BATCH: 4
+  IMS_PER_BATCH: 8
   BASE_LR: 0.00005
   STEPS: (60000, 80000)
   MAX_ITER: 90000
-OUTPUT_DIR: "results/r50"
+OUTPUT_DIR: 'results/r50'
