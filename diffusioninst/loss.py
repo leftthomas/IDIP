@@ -1,35 +1,31 @@
 import torch
 import torch.nn.functional as F
+from scipy.optimize import linear_sum_assignment
 from torch import nn
-from torchvision.ops import generalized_box_iou, sigmoid_focal_loss, box_convert, box_iou
+from torchvision.ops import generalized_box_iou, sigmoid_focal_loss, box_convert
 
 
-def dice_coefficient(x, target):
-    eps = 1e-5
+def dice_loss(x, target):
     n_instance = x.size(0)
-    x = x.reshape(n_instance, -1)
-    target = target.reshape(n_instance, -1)
-    intersection = (x * target).sum(dim=1)
-    union = (x ** 2.0).sum(dim=1) + (target ** 2.0).sum(dim=1) + eps
-    loss = 1. - (2 * intersection / union)
+    x = x.view(n_instance, -1)
+    target = target.view(n_instance, -1)
+    intersection = (x * target).sum(dim=-1)
+    union = x.sum(dim=-1) + target.sum(dim=-1) + 1e-8
+    loss = 1 - (2 * intersection / union)
     return loss
 
 
 class SetCriterion(nn.Module):
-    """ This class computes the loss for DiffusionInst.
-    The process happens in two steps:
-        1) we compute hungarian assignment between ground truth boxes and the outputs of the model
-        2) we supervise each pair of matched ground-truth / prediction (supervise class, box and mask)
-    """
     def __init__(self, cfg):
         super().__init__()
         self.num_classes = cfg.MODEL.DiffusionInst.NUM_CLASSES
-        self.matcher = HungarianMatcher()
+        self.cls_weight = cfg.MODEL.DiffusionInst.CLS_WEIGHT
+        self.l1_weight = cfg.MODEL.DiffusionInst.L1_WEIGHT
+        self.giou_weight = cfg.MODEL.DiffusionInst.GIOU_WEIGHT
+        self.mask_weight = cfg.MODEL.DiffusionInst.MASK_WEIGHT
+        self.matcher = HungarianMatcher(self.cls_weight, self.l1_weight, self.giou_weight, self.mask_weight)
 
     def loss_labels(self, outputs, targets, indices):
-        """Classification loss (NLL)
-        targets dicts must contain the key 'labels' containing a tensor of dim [nb_target_boxes]
-        """
         src_logits = outputs['pred_logits']
         batch_size = len(targets)
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
@@ -136,7 +132,7 @@ class SetCriterion(nn.Module):
                 gt_masks = gt_masks[:, start::8, start::8]
                 gt_masks = gt_masks.gt(0.5).float()
 
-                loss_mask += dice_coefficient(pred_masks, gt_masks).sum()
+                loss_mask += dice_loss(pred_masks, gt_masks).sum()
                 num_mask += len(gt_multi_idx)
 
         if num_mask > 0:
@@ -148,15 +144,8 @@ class SetCriterion(nn.Module):
         return losses
 
     def forward(self, outputs, targets):
-        """ This performs the loss computation.
-        Parameters:
-             outputs: dict of tensors, see the output specification of the model for the format
-             targets: list of dicts, such that len(targets) == batch_size.
-                      The expected keys in each dict depends on the losses applied, see each loss' doc
-        """
-        # retrieve the matching between the outputs of the last layer and the targets
-        indices, _ = self.matcher(outputs, targets)
-        # compute all the requested losses
+        # retrieve the matching between outputs and targets
+        indices = self.matcher(outputs, targets)
         losses = {}
         losses.update(self.loss_labels(outputs, targets, indices))
         losses.update(self.loss_boxes(outputs, targets, indices))
@@ -165,69 +154,60 @@ class SetCriterion(nn.Module):
 
 
 class HungarianMatcher(nn.Module):
-    """This class computes an assignment between the targets and the predictions of the network
-    For efficiency reasons, the targets don't include the no_object. Because of this, in general,
-    there are more predictions than targets. In this case, we do a 1-to-k (dynamic) matching of the best predictions,
-    while the others are un-matched (and thus treated as non-objects).
-    """
-
-    def __init__(self, cost_class: float = 1, cost_bbox: float = 1, cost_giou: float = 1, cost_mask: float = 1):
-        """Creates the matcher
-        Params:
-            cost_class: This is the relative weight of the classification error in the matching cost
-            cost_bbox: This is the relative weight of the L1 error of the bounding box coordinates in the matching cost
-            cost_giou: This is the relative weight of the giou loss of the bounding box in the matching cost
-        """
+    def __init__(self, cost_cls, cost_l1, cost_giou, cost_mask, alpha=0.25, gamma=2):
         super().__init__()
-        self.cost_class = cost_class
-        self.cost_bbox = cost_bbox
+        self.cost_cls = cost_cls
+        self.cost_l1 = cost_l1
         self.cost_giou = cost_giou
         self.cost_mask = cost_mask
+        self.alpha = alpha
+        self.gamma = gamma
 
     def forward(self, outputs, targets):
         with torch.no_grad():
-            bs, num_queries = outputs['pred_logits'].shape[:2]
-            out_prob = outputs['pred_logits']
-            out_bbox = outputs['pred_boxes']
+            # [B, N, C], [B, N, 4], [B, N, C, 2*S, 2*S]
+            pred_logits, pred_boxes, pred_masks = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_masks']
+            b, n, c, t, _ = pred_masks.size()
 
-            indices, matched_ids = [], []
-            for batch_idx in range(bs):
-                bz_out_prob = out_prob[batch_idx]
-                bz_boxes = out_bbox[batch_idx]  # [num_proposals, 4]
-                bz_tgt_ids = targets[batch_idx]['gt_classes']
-                bz_gtboxs = targets[batch_idx]['gt_boxes']  # [num_gt, 4] (x, y, x, y)
-                fg_mask, is_in_boxes_and_center = self.get_in_boxes_info(
-                    bz_boxes,  # absolute (cx, cy, w, h)
-                    bz_gtboxs,  # absolute (x, y, x, y)
-                )
+            indices = []
+            for i in range(b):
+                # [N, C], [N, 4], [N, C, 2*S, 2*S]
+                logits, boxes, masks = pred_logits[i], pred_boxes[i], pred_masks[i]
+                # [M], [M, 4], [M, H, W]
+                gt_classes, gt_boxes, gt_masks = targets[i]['classes'], targets[i]['boxes'], targets[i]['masks']
+                image_size = targets[i]['image_size']
+                m = gt_classes.size(0)
 
-                pair_wise_ious = box_iou(bz_boxes, bz_gtboxs)
+                # compute the classification cost with focal loss
+                alpha, gamma = self.alpha, self.gamma
+                logits = logits.sigmoid()
+                pos_cost = alpha * ((1 - logits) ** gamma) * (-(logits + 1e-8).log())
+                neg_cost = (1 - alpha) * (logits ** gamma) * (-(1 - logits + 1e-8).log())
+                # [N, M]
+                cls_cost = pos_cost[:, gt_classes] - neg_cost[:, gt_classes]
 
-                # compute the classification cost
-                alpha = self.focal_loss_alpha
-                gamma = self.focal_loss_gamma
-                neg_cost_class = (1 - alpha) * (bz_out_prob ** gamma) * (-(1 - bz_out_prob + 1e-8).log())
-                pos_cost_class = alpha * ((1 - bz_out_prob) ** gamma) * (-(bz_out_prob + 1e-8).log())
-                cost_class = pos_cost_class[:, bz_tgt_ids] - neg_cost_class[:, bz_tgt_ids]
+                # compute the box cost with L1 loss and GIoU loss in normalized coordinates
+                norm_boxes = boxes / image_size
+                norm_gt_boxes = gt_boxes / image_size
+                # [N, M]
+                l1_cost = torch.cdist(norm_boxes, norm_gt_boxes, p=1)
+                giou_cost = -generalized_box_iou(norm_boxes, norm_gt_boxes)
 
-                bz_image_size_out = targets[batch_idx]['image_size_xyxy']
-                bz_image_size_tgt = targets[batch_idx]['image_size_xyxy_tgt']
+                # compute the mask cost with dice loss
+                masks = masks.sigmoid()
+                # [M, 2*S, 2*S]
+                gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
+                # [N, M]
+                masks = torch.index_select(masks.view(n, c, -1), dim=1, index=gt_classes)
+                gt_masks = gt_masks.view(1, m, -1)
+                intersection = (masks * gt_masks).sum(dim=-1)
+                union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
+                mask_cost = 1 - (2 * intersection / union)
 
-                bz_out_bbox_ = bz_boxes / bz_image_size_out  # normalize (x1, y1, x2, y2)
-                bz_tgt_bbox_ = bz_gtboxs / bz_image_size_tgt  # normalize (x1, y1, x2, y2)
-                cost_bbox = torch.cdist(bz_out_bbox_, bz_tgt_bbox_, p=1)
-
-                cost_giou = -generalized_box_iou(bz_boxes, bz_gtboxs)
-
-                # Final cost matrix
-                cost = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou + 100.0 * (
-                    ~is_in_boxes_and_center)
-                cost[~fg_mask] = cost[~fg_mask] + 10000.0
-
-                # if bz_gtboxs.shape[0]>0:
-                indices_batchi, matched_qidx = self.dynamic_k_matching(cost, pair_wise_ious, bz_gtboxs.shape[0])
-
-                indices.append(indices_batchi)
-                matched_ids.append(matched_qidx)
-
-        return indices, matched_ids
+                # final cost matrix
+                cost = self.cost_cls * cls_cost + self.cost_l1 * l1_cost + self.cost_giou * giou_cost \
+                       + self.cost_mask * mask_cost
+                row_ind, col_ind = linear_sum_assignment(cost.cpu())
+                row_ind, col_ind = torch.as_tensor(row_ind), torch.as_tensor(col_ind)
+                indices.append(torch.stack((row_ind, col_ind), dim=-1).to(cost.device))
+        return indices

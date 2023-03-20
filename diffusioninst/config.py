@@ -14,10 +14,10 @@ def add_diffusioninst_config(cfg):
     cfg.MODEL.DiffusionInst.NUM_HEADS = 8
 
     # loss
-    cfg.MODEL.DiffusionInst.CLASS_WEIGHT = 2.0
+    cfg.MODEL.DiffusionInst.CLS_WEIGHT = 2.0
     cfg.MODEL.DiffusionInst.L1_WEIGHT = 5.0
     cfg.MODEL.DiffusionInst.GIOU_WEIGHT = 2.0
-    cfg.MODEL.DiffusionInst.MASK_WEIGHT = 1.0
+    cfg.MODEL.DiffusionInst.MASK_WEIGHT = 5.0
 
     # optimizer
     cfg.SOLVER.OPTIMIZER = 'ADAMW'

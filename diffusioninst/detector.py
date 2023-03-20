@@ -49,15 +49,8 @@ class DiffusionInst(nn.Module):
         # build mask head
         self.mask_head = MaskHead(cfg, self.dim_features)
 
-        # loss parameters
-        class_weight = cfg.MODEL.DiffusionInst.CLASS_WEIGHT
-        l1_weight = cfg.MODEL.DiffusionInst.L1_WEIGHT
-        giou_weight = cfg.MODEL.DiffusionInst.GIOU_WEIGHT
-        mask_weight = cfg.MODEL.DiffusionInst.MASK_WEIGHT
-        self.weight_dict = {'loss_ce': class_weight, 'loss_bbox': l1_weight,
-                            'loss_giou': giou_weight, 'loss_mask': mask_weight}
-
-        self.criterion = SetCriterion(cfg=cfg)
+        # build loss criterion
+        self.criterion = SetCriterion(cfg)
 
         self.register_buffer('pixel_mean', torch.as_tensor(cfg.MODEL.PIXEL_MEAN).view(3, 1, 1))
         self.register_buffer('pixel_std', torch.as_tensor(cfg.MODEL.PIXEL_STD).view(3, 1, 1))
@@ -75,14 +68,12 @@ class DiffusionInst(nn.Module):
             roi_features = torch.flatten(self.pooler(features, [Boxes(b) for b in boxes]), start_dim=-2)
             # [B, N, D, S*S]
             roi_features = roi_features.view(len(targets), self.num_proposals, self.dim_features, -1)
+            # [B, N, C], [B, N, 4]
             pred_logits, pred_boxes = self.detect_head(roi_features, ts, boxes)
+            # [B, N, C, 2*S, 2*S]
             pred_masks = self.mask_head(roi_features, ts)
-            pred_logits = pred_logits.view(-1, self.num_proposals, self.num_classes)
-            pred_boxes = pred_boxes.view(-1, self.num_proposals, 4)
             output = {'pred_logits': pred_logits, 'pred_boxes': pred_boxes, 'pred_masks': pred_masks}
             loss_dict = self.criterion(output, targets)
-            for k in loss_dict.keys():
-                loss_dict[k] *= self.weight_dict[k]
             return loss_dict
         else:
             results = self.ddim_sample(batched_inputs, features, images)
@@ -100,21 +91,21 @@ class DiffusionInst(nn.Module):
             instances = x['instances'].to(self.device)
             gt_classes = instances.gt_classes
             gt_boxes = instances.gt_boxes.tensor
-            gt_masks = instances.gt_masks.tensor
+            gt_masks = instances.gt_masks
+            h, w = instances.image_size
+            image_size = torch.as_tensor([w, h, w, h], device=self.device).view(1, 4)
 
-            crpt_boxes, noise, t = self.prepare_diffusion(gt_boxes, instances.image_size)
+            crpt_boxes, noise, t = self.prepare_diffusion(gt_boxes, image_size)
             diffused_boxes.append(crpt_boxes)
             noises.append(noise)
             ts.append(t)
 
-            targets.append({'gt_classes': gt_classes, 'gt_boxes': gt_boxes, 'gt_masks': gt_masks})
+            targets.append({'classes': gt_classes, 'boxes': gt_boxes, 'masks': gt_masks, 'image_size': image_size})
 
         return targets, torch.stack(diffused_boxes), torch.stack(noises), torch.stack(ts)
 
     def prepare_diffusion(self, gt_boxes, image_size):
         # normalize to relative coordinates, and use cxcywh format
-        h, w = image_size
-        image_size = torch.as_tensor([w, h, w, h], device=self.device).view(1, 4)
         gt_boxes = box_convert(gt_boxes / image_size, in_fmt='xyxy', out_fmt='cxcywh')
 
         # box padding

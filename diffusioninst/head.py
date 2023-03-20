@@ -98,7 +98,7 @@ class DetectHead(nn.Module):
         cls_feature = self.cls_layer(fc_feature)
         reg_feature = self.reg_layer(fc_feature)
         # [B, N, C]
-        pred_logits = torch.sigmoid(self.class_logits(cls_feature))
+        pred_logits = self.class_logits(cls_feature)
         # [B, N, 4]
         boxes_deltas = self.boxes_delta(reg_feature)
         pred_boxes = self.transform.apply_deltas(boxes_deltas.view(-1, 4), boxes.view(-1, 4)).view(b, -1, 4)
@@ -108,17 +108,17 @@ class DetectHead(nn.Module):
 class MaskHead(nn.Module):
     def __init__(self, cfg, hidden_dim):
         super().__init__()
+        num_classes = cfg.MODEL.DiffusionInst.NUM_CLASSES
         num_heads = cfg.MODEL.DiffusionInst.NUM_HEADS
         pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
         self.num_proposals = cfg.MODEL.DiffusionInst.NUM_PROPOSALS
         self.dynamic_block = DynamicBlock(hidden_dim, num_heads, pooler_resolution)
 
-        self.mask_layer = nn.Sequential(nn.Conv2d(hidden_dim, 128, 3, padding=1, bias=False), nn.BatchNorm2d(128),
-                                        nn.ReLU(inplace=True), nn.Conv2d(128, 128, 3, padding=1, bias=False),
+        self.mask_layer = nn.Sequential(nn.Conv2d(hidden_dim, 256, 3, padding=1, bias=False), nn.BatchNorm2d(256),
+                                        nn.ReLU(inplace=True), nn.ConvTranspose2d(256, 128, 3, 2, 1, 1, bias=False),
                                         nn.BatchNorm2d(128), nn.ReLU(inplace=True),
-                                        nn.Conv2d(128, 8, 3, padding=1, bias=False), nn.BatchNorm2d(8),
-                                        nn.ReLU(inplace=True), nn.Conv2d(8, 8, 3, padding=1, bias=False),
-                                        nn.BatchNorm2d(8), nn.ReLU(inplace=True), nn.Conv2d(8, 1, 1))
+                                        nn.Conv2d(128, 128, 3, padding=1, bias=False), nn.BatchNorm2d(128),
+                                        nn.ReLU(inplace=True), nn.Conv2d(128, num_classes, 1))
 
     def forward(self, roi_features, ts):
         # [B, N, D]
@@ -128,6 +128,6 @@ class MaskHead(nn.Module):
 
         # [B*N, D, S, S]
         mask_feature = (roi_features + fc_feature.unsqueeze(dim=-1)).view(b * n, d, s, -1)
-        # [B, N, S, S]
-        pred_masks = torch.sigmoid(self.mask_layer(mask_feature).view(b, n, -1, s))
+        # [B, N, C, 2*S, 2*S]
+        pred_masks = self.mask_layer(mask_feature).view(b, n, -1, 2 * s, 2 * s)
         return pred_masks
