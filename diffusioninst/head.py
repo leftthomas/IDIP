@@ -2,15 +2,25 @@ import math
 import torch
 from detectron2.modeling.box_regression import Box2BoxTransform
 from torch import nn
+from torchvision.ops import box_convert, clip_boxes_to_image
 
 
 def cosine_schedule(num_steps, s=0.008):
     # ref Improved Denoising Diffusion Probabilistic Models
-    t = torch.linspace(0, num_steps, num_steps + 1)
+    # note: must use float64 to avoid numerical error in ddim sample step
+    t = torch.linspace(0, num_steps, num_steps + 1, dtype=torch.float64)
     f_t = torch.cos(((t / num_steps) + s) / (1 + s) * math.pi * 0.5) ** 2
     alpha_cumprod_t = f_t / f_t[0]
     beta_t = 1 - (alpha_cumprod_t[1:] / alpha_cumprod_t[:-1])
     return torch.clamp(beta_t, min=0, max=0.999)
+
+
+def normed_box_to_abs_box(normed_box, img_size):
+    normed_box = torch.clamp((normed_box + 1) / 2, min=0, max=1)
+    normed_box[:, 2:] = torch.clamp(normed_box[:, 2:], min=1e-4, max=1.0)
+    normed_box = box_convert(normed_box, in_fmt='cxcywh', out_fmt='xyxy')
+    normed_box = clip_boxes_to_image(normed_box, (1, 1))
+    return normed_box * img_size
 
 
 # ref TENER: Adapting Transformer Encoder for Named Entity Recognition
