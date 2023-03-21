@@ -12,7 +12,8 @@ def cosine_schedule(num_steps, s=0.008):
     f_t = torch.cos(((t / num_steps) + s) / (1 + s) * math.pi * 0.5) ** 2
     alpha_cumprod_t = f_t / f_t[0]
     beta_t = 1 - (alpha_cumprod_t[1:] / alpha_cumprod_t[:-1])
-    return torch.clamp(beta_t, min=0, max=0.999)
+    alpha_t = 1 - torch.clamp(beta_t, min=0, max=0.999)
+    return alpha_t
 
 
 def normed_box_to_abs_box(normed_box, img_size):

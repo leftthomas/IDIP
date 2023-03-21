@@ -30,11 +30,8 @@ class DiffusionInst(nn.Module):
         # build diffusion
         self.num_steps = cfg.MODEL.DiffusionInst.NUM_STEPS
         self.sampling_steps = cfg.MODEL.DiffusionInst.SAMPLING_STEPS
-        self.register_buffer('betas', cosine_schedule(self.num_steps))
-        self.register_buffer('alphas', 1 - self.betas)
-        self.register_buffer('alphas_cumprod', torch.cumprod(self.alphas, dim=0))
-        self.register_buffer('sqrt_alphas_cumprod', torch.sqrt(self.alphas_cumprod))
-        self.register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1 - self.alphas_cumprod))
+        alphas = cosine_schedule(self.num_steps)
+        self.register_buffer('alphas_cumprod', torch.cumprod(alphas, dim=0))
 
         # build RoI Pooler
         pooler_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
@@ -131,9 +128,7 @@ class DiffusionInst(nn.Module):
         x_start = x_start * 2 - 1
         t = torch.randint(0, self.num_steps, (1,), device=self.device)
         noise = torch.randn_like(x_start)
-        sqrt_alphas_cumprod_t = self.sqrt_alphas_cumprod[t]
-        sqrt_one_minus_alphas_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t]
-        x_t = sqrt_alphas_cumprod_t * x_start + sqrt_one_minus_alphas_cumprod_t * noise
+        x_t = self.alphas_cumprod[t].sqrt() * x_start + (1 - self.alphas_cumprod[t]).sqrt() * noise
 
         # back to absolute coordinates, and use xyxy format
         crpt_boxes = normed_box_to_abs_box(x_t, image_size)
@@ -157,8 +152,8 @@ class DiffusionInst(nn.Module):
             # operate in [-1, 1] space to keep same with diffusion noise
             x_start = box_convert(pred_boxes.squeeze(dim=0) / image_size, in_fmt='xyxy', out_fmt='cxcywh')
             x_start = torch.clamp(x_start, min=0, max=1) * 2 - 1
-            pred_noise = (x_t - self.sqrt_alphas_cumprod[time_now] * x_start) / self.sqrt_one_minus_alphas_cumprod[
-                time_now]
+            pred_noise = (x_t - self.alphas_cumprod[time_now].sqrt() * x_start) / (
+                        1 - self.alphas_cumprod[time_now]).sqrt()
 
             if time_next < 0:
                 x_t = x_start
