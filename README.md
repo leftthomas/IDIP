@@ -10,10 +10,10 @@ screen tensorboard --logdir=results --bind_all
 
 ## Model Performance
 
- Method          | Mask AP (1 step) | Mask AP (4 step) 
------------------|:----------------:|:----------------:
- COCO-val-Res50  |       37.3       |       37.5       
- COCO-val-Res101 |       41.0       |       41.1       
- COCO-val-Swin-B |       46.6       |       46.8       
+| Method          | Mask AP (1 step) | Mask AP (4 step) |
+|-----------------|:----------------:|:----------------:|
+| COCO-val-Res50  |       37.3       |       37.5       |
+| COCO-val-Res101 |       41.0       |       41.1       |
+| COCO-val-Swin-B |       46.6       |       46.8       |
 
 ![](results/visual.jpeg)
