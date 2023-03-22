@@ -111,13 +111,15 @@ class DetectHead(nn.Module):
 
 
 class MaskHead(nn.Module):
-    def __init__(self, num_classes, dim_hidden):
+    def __init__(self, dim_hidden):
         super().__init__()
         self.mask_layer = nn.Sequential(nn.Conv2d(dim_hidden, 256, 3, padding=1), nn.BatchNorm2d(256),
                                         nn.ReLU(inplace=True), nn.ConvTranspose2d(256, 128, 3, 2, 1, 1),
                                         nn.BatchNorm2d(128), nn.ReLU(inplace=True),
                                         nn.Conv2d(128, 128, 3, padding=1), nn.BatchNorm2d(128),
-                                        nn.ReLU(inplace=True), nn.Conv2d(128, num_classes, 1))
+                                        nn.ReLU(inplace=True), nn.Conv2d(128, 8, 3, padding=1), nn.BatchNorm2d(8),
+                                        nn.ReLU(inplace=True), nn.Conv2d(8, 8, 3, padding=1), nn.BatchNorm2d(8),
+                                        nn.ReLU(inplace=True), nn.Conv2d(8, 1, 1))
 
     def forward(self, time_emb, roi_features):
         # [B, N, D]
@@ -126,6 +128,6 @@ class MaskHead(nn.Module):
 
         # [B*N, D, S, S]
         mask_feature = (roi_features + time_emb.unsqueeze(dim=-1)).view(b * n, d, s, -1)
-        # [B, N, C, 2*S, 2*S]
-        pred_masks = self.mask_layer(mask_feature).view(b, n, -1, 2 * s, 2 * s)
+        # [B, N, 2*S, 2*S]
+        pred_masks = self.mask_layer(mask_feature).view(b, -1, 2 * s, 2 * s)
         return pred_masks

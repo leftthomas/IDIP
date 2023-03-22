@@ -19,14 +19,15 @@ class SetCriterion(nn.Module):
     def forward(self, outputs, targets):
         # retrieve the matching between outputs and targets
         indices = self.matcher(outputs, targets)
-        # [B, N, C], [B, N, 4], [B, N, C, 2*S, 2*S]
+        # [B, N, C], [B, N, 4], [B, N, 2*S, 2*S]
         pred_logits, pred_boxes, pred_masks = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_masks']
-        b, n, c, t, _ = pred_masks.size()
+        b, n, t, _ = pred_masks.size()
+        c = pred_logits.size(-1)
 
         num_instances, total_cls_loss, total_l1_loss, total_giou_loss, total_mask_loss = 0, 0, 0, 0, 0
         for i in range(b):
             row_ind, col_ind = indices[i][:, 0], indices[i][:, 1]
-            # [M, C], [M, 4], [M, C, 2*S, 2*S]
+            # [M, C], [M, 4], [M, 2*S, 2*S]
             logits = torch.index_select(pred_logits[i], dim=0, index=row_ind)
             boxes = torch.index_select(pred_boxes[i], dim=0, index=row_ind)
             masks = torch.index_select(pred_masks[i], dim=0, index=row_ind)
@@ -56,7 +57,7 @@ class SetCriterion(nn.Module):
             # [M, 2*S, 2*S]
             gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
             # [M, 2*S*2*S]
-            masks = masks.view(m, c, -1)[torch.arange(m).to(masks.device), gt_classes, :]
+            masks = masks.view(m, -1)
             gt_masks = gt_masks.view(m, -1)
             intersection = (masks * gt_masks).sum(dim=-1)
             union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
@@ -84,13 +85,14 @@ class HungarianMatcher(nn.Module):
 
     @torch.no_grad()
     def forward(self, outputs, targets):
-        # [B, N, C], [B, N, 4], [B, N, C, 2*S, 2*S]
+        # [B, N, C], [B, N, 4], [B, N, 2*S, 2*S]
         pred_logits, pred_boxes, pred_masks = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_masks']
-        b, n, c, t, _ = pred_masks.size()
+        b, n, t, _ = pred_masks.size()
+        c = pred_logits.size(-1)
 
         indices = []
         for i in range(b):
-            # [N, C], [N, 4], [N, C, 2*S, 2*S]
+            # [N, C], [N, 4], [N, 2*S, 2*S]
             logits, boxes, masks = pred_logits[i], pred_boxes[i], pred_masks[i]
             # [M], [M, 4], [M, H, W]
             gt_classes, gt_boxes, gt_masks = targets[i]['classes'], targets[i]['boxes'], targets[i]['masks']
@@ -117,7 +119,7 @@ class HungarianMatcher(nn.Module):
             # [M, 2*S, 2*S]
             gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
             # [N, M]
-            masks = torch.index_select(masks.view(n, c, -1), dim=1, index=gt_classes)
+            masks = masks.view(n, 1, -1)
             gt_masks = gt_masks.view(1, m, -1)
             intersection = (masks * gt_masks).sum(dim=-1)
             union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8

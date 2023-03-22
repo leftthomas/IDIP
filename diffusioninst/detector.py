@@ -47,7 +47,7 @@ class DiffusionInst(nn.Module):
         # build detect head
         self.detect_head = DetectHead(self.num_classes, self.dim_features)
         # build mask head
-        self.mask_head = MaskHead(self.num_classes, self.dim_features)
+        self.mask_head = MaskHead(self.dim_features)
 
         # build loss criterion
         self.criterion = SetCriterion(cfg)
@@ -72,13 +72,13 @@ class DiffusionInst(nn.Module):
             time_emb = self.time_head(roi_features, ts)
             # [B, N, C], [B, N, 4]
             pred_logits, pred_boxes = self.detect_head(time_emb, boxes)
-            # [B, N, C, 2*S, 2*S]
+            # [B, N, 2*S, 2*S]
             pred_masks = self.mask_head(time_emb, roi_features)
             output = {'pred_logits': pred_logits, 'pred_boxes': pred_boxes, 'pred_masks': pred_masks}
             loss_dict = self.criterion(output, targets)
             return loss_dict
         else:
-            # [N, C], [N, 4], [N, C, 2*S, 2*S]
+            # [N, C], [N, 4], [N, 2*S, 2*S]
             pred_logits, pred_boxes, pred_masks = self.ddim_sample(batched_inputs, features)
             results = self.inference(pred_logits, pred_boxes, pred_masks, batched_inputs)
             return results
@@ -153,7 +153,7 @@ class DiffusionInst(nn.Module):
             time_emb = self.time_head(roi_features, time_now.view(1, 1))
             # [1, N, C], [1, N, 4]
             pred_logits, pred_boxes = self.detect_head(time_emb, boxes.unsqueeze(dim=0))
-            # [1, N, C, 2*S, 2*S]
+            # [1, N, 2*S, 2*S]
             pred_masks = self.mask_head(time_emb, roi_features)
 
             # operate in [-1, 1] space to keep same with diffusion noise
@@ -189,7 +189,7 @@ class DiffusionInst(nn.Module):
         scores, indices = pred_logits.flatten(0, 1).topk(self.num_proposals, sorted=False)
         classes = labels[indices]
         boxes = pred_boxes.view(-1, 1, 4).repeat(1, self.num_classes, 1).view(-1, 4)[indices]
-        masks = pred_masks.view(-1, 1, t, t)[indices]
+        masks = pred_masks.view(-1, 1, t, t).repeat(1, self.num_classes, 1, 1).view(-1, 1, t, t)[indices]
 
         # convert to detectron2 needed format
         result.pred_boxes = Boxes(boxes)
