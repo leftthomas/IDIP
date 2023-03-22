@@ -7,7 +7,7 @@ from detectron2.structures import Boxes, ImageList, Instances
 from torch import nn
 from torchvision.ops import box_convert, clip_boxes_to_image
 
-from .head import DetectHead, MaskHead, cosine_schedule, normed_box_to_abs_box
+from .head import DetectHead, MaskHead, cosine_schedule, normed_box_to_abs_box, DynamicBlock
 from .loss import SetCriterion
 
 
@@ -40,10 +40,14 @@ class DiffusionInst(nn.Module):
         pooler_scales = [1.0 / self.backbone.output_shape()[k].stride for k in self.in_features]
         self.pooler = ROIPooler(pooler_resolution, pooler_scales, sampling_ratio, pooler_type)
 
+        # build time head
+        num_heads = cfg.MODEL.DiffusionInst.NUM_HEADS
+        self.time_head = DynamicBlock(self.dim_features, num_heads, pooler_resolution)
+
         # build detect head
-        self.detect_head = DetectHead(cfg, self.dim_features)
+        self.detect_head = DetectHead(self.num_classes, self.dim_features)
         # build mask head
-        self.mask_head = MaskHead(cfg, self.dim_features)
+        self.mask_head = MaskHead(self.num_classes, self.dim_features)
 
         # build loss criterion
         self.criterion = SetCriterion(cfg)
@@ -64,10 +68,12 @@ class DiffusionInst(nn.Module):
             roi_features = torch.flatten(self.pooler(features, [Boxes(b) for b in boxes]), start_dim=-2)
             # [B, N, D, S*S]
             roi_features = roi_features.view(len(targets), self.num_proposals, self.dim_features, -1)
+            # [B, N, D]
+            time_emb = self.time_head(roi_features, ts)
             # [B, N, C], [B, N, 4]
-            pred_logits, pred_boxes = self.detect_head(roi_features, ts, boxes)
+            pred_logits, pred_boxes = self.detect_head(time_emb, boxes)
             # [B, N, C, 2*S, 2*S]
-            pred_masks = self.mask_head(roi_features, ts)
+            pred_masks = self.mask_head(time_emb, roi_features)
             output = {'pred_logits': pred_logits, 'pred_boxes': pred_boxes, 'pred_masks': pred_masks}
             loss_dict = self.criterion(output, targets)
             return loss_dict
@@ -144,10 +150,11 @@ class DiffusionInst(nn.Module):
         for time_now, time_next in zip(times[:-1], times[1:]):
             boxes = normed_box_to_abs_box(x_t, image_size)
             roi_features = torch.flatten(self.pooler(features, [Boxes(boxes)]), start_dim=-2).unsqueeze(dim=0)
+            time_emb = self.time_head(roi_features, time_now.view(1, 1))
             # [1, N, C], [1, N, 4]
-            pred_logits, pred_boxes = self.detect_head(roi_features, time_now.view(1, 1), boxes.unsqueeze(dim=0))
+            pred_logits, pred_boxes = self.detect_head(time_emb, boxes.unsqueeze(dim=0))
             # [1, N, C, 2*S, 2*S]
-            pred_masks = self.mask_head(roi_features, time_now.view(1, 1))
+            pred_masks = self.mask_head(time_emb, roi_features)
 
             # operate in [-1, 1] space to keep same with diffusion noise
             x_start = box_convert(pred_boxes.squeeze(dim=0) / image_size, in_fmt='xyxy', out_fmt='cxcywh')

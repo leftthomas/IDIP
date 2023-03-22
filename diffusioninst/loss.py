@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from detectron2.structures import BitMasks
 from scipy.optimize import linear_sum_assignment
 from torch import nn
-from torchvision.ops import generalized_box_iou, sigmoid_focal_loss
+from torchvision.ops import generalized_box_iou, sigmoid_focal_loss, box_convert
 
 
 class SetCriterion(nn.Module):
@@ -126,6 +126,17 @@ class HungarianMatcher(nn.Module):
             # final cost matrix
             cost = self.cost_cls * cls_cost + self.cost_l1 * l1_cost + self.cost_giou * giou_cost \
                    + self.cost_mask * mask_cost
+
+            # filter out the boxes not inside the ground truth boxes
+            center = box_convert(boxes, in_fmt='xyxy', out_fmt='cxcywh')[:, :2]
+            center_x, center_y = center[:, 0].unsqueeze(1), center[:, 1].unsqueeze(1)
+            b_l = center_x > gt_boxes[:, 0].unsqueeze(0)
+            b_r = center_x < gt_boxes[:, 2].unsqueeze(0)
+            b_t = center_y > gt_boxes[:, 1].unsqueeze(0)
+            b_b = center_y < gt_boxes[:, 3].unsqueeze(0)
+            is_in_boxes = b_l & b_r & b_t & b_b
+            cost[~is_in_boxes] = cost[~is_in_boxes] + 1e8
+
             row_ind, col_ind = linear_sum_assignment(cost.cpu())
             row_ind, col_ind = torch.as_tensor(row_ind), torch.as_tensor(col_ind)
             indices.append(torch.stack((row_ind, col_ind), dim=-1).to(cost.device))

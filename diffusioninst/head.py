@@ -41,22 +41,22 @@ class SinusoidalPositionEmbeddings(nn.Module):
 
 
 class DynamicBlock(nn.Module):
-    def __init__(self, hidden_dim, num_heads, pooler_resolution):
+    def __init__(self, dim_hidden, num_heads, pooler_resolution):
         super().__init__()
-        self.atte = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True)
-        self.norm = nn.LayerNorm(hidden_dim)
+        self.atte = nn.MultiheadAttention(dim_hidden, num_heads, batch_first=True)
+        self.norm = nn.LayerNorm(dim_hidden)
         # ref Sparse R-CNN: End-to-End Object Detection with Learnable Proposals
-        self.num_params = hidden_dim ** 2 // 4
-        self.linear1 = nn.Linear(hidden_dim, 2 * self.num_params)
-        self.norm1 = nn.LayerNorm(hidden_dim // 4)
-        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.num_params = dim_hidden ** 2 // 4
+        self.linear1 = nn.Linear(dim_hidden, 2 * self.num_params)
+        self.norm1 = nn.LayerNorm(dim_hidden // 4)
+        self.norm2 = nn.LayerNorm(dim_hidden)
         self.relu = nn.ReLU(inplace=True)
-        self.linear2 = nn.Linear(hidden_dim * pooler_resolution ** 2, hidden_dim)
-        self.norm3 = nn.LayerNorm(hidden_dim)
+        self.linear2 = nn.Linear(dim_hidden * pooler_resolution ** 2, dim_hidden)
+        self.norm3 = nn.LayerNorm(dim_hidden)
         # ref Denoising Diffusion Probabilistic Models
-        self.time_emb = nn.Sequential(SinusoidalPositionEmbeddings(hidden_dim), nn.Linear(hidden_dim, hidden_dim * 4),
-                                      nn.GELU(), nn.Linear(hidden_dim * 4, hidden_dim * 4))
-        self.time_mlp = nn.Sequential(nn.SiLU(), nn.Linear(hidden_dim * 4, hidden_dim * 2))
+        self.time_emb = nn.Sequential(SinusoidalPositionEmbeddings(dim_hidden), nn.Linear(dim_hidden, dim_hidden * 4),
+                                      nn.GELU(), nn.Linear(dim_hidden * 4, dim_hidden * 4))
+        self.time_mlp = nn.Sequential(nn.SiLU(), nn.Linear(dim_hidden * 4, dim_hidden * 2))
 
     def forward(self, roi_features, ts):
         # [B, N, D]
@@ -86,28 +86,22 @@ class DynamicBlock(nn.Module):
 
 
 class DetectHead(nn.Module):
-    def __init__(self, cfg, hidden_dim):
+    def __init__(self, num_classes, dim_hidden):
         super().__init__()
-        num_classes = cfg.MODEL.DiffusionInst.NUM_CLASSES
-        num_heads = cfg.MODEL.DiffusionInst.NUM_HEADS
-        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
-        self.dynamic_block = DynamicBlock(hidden_dim, num_heads, pooler_resolution)
-
-        self.cls_layer = nn.Sequential(nn.Linear(hidden_dim, hidden_dim, False), nn.LayerNorm(hidden_dim),
+        self.cls_layer = nn.Sequential(nn.Linear(dim_hidden, dim_hidden, False), nn.LayerNorm(dim_hidden),
                                        nn.ReLU(inplace=True))
-        self.reg_layer = nn.Sequential(nn.Linear(hidden_dim, hidden_dim, False), nn.LayerNorm(hidden_dim),
+        self.reg_layer = nn.Sequential(nn.Linear(dim_hidden, dim_hidden, False), nn.LayerNorm(dim_hidden),
                                        nn.ReLU(inplace=True))
-        self.class_logits = nn.Linear(hidden_dim, num_classes)
-        self.boxes_delta = nn.Linear(hidden_dim, 4)
+        self.class_logits = nn.Linear(dim_hidden, num_classes)
+        self.boxes_delta = nn.Linear(dim_hidden, 4)
         self.transform = Box2BoxTransform(weights=(2.0, 2.0, 1.0, 1.0))
 
-    def forward(self, roi_features, ts, boxes):
+    def forward(self, time_emb, boxes):
         # [B, N, D]
-        fc_feature = self.dynamic_block(roi_features, ts)
-        b, n, d = fc_feature.size()
+        b, n, d = time_emb.size()
 
-        cls_feature = self.cls_layer(fc_feature)
-        reg_feature = self.reg_layer(fc_feature)
+        cls_feature = self.cls_layer(time_emb)
+        reg_feature = self.reg_layer(time_emb)
         # [B, N, C]
         pred_logits = self.class_logits(cls_feature)
         # [B, N, 4]
@@ -117,28 +111,21 @@ class DetectHead(nn.Module):
 
 
 class MaskHead(nn.Module):
-    def __init__(self, cfg, hidden_dim):
+    def __init__(self, num_classes, dim_hidden):
         super().__init__()
-        num_classes = cfg.MODEL.DiffusionInst.NUM_CLASSES
-        num_heads = cfg.MODEL.DiffusionInst.NUM_HEADS
-        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
-        self.num_proposals = cfg.MODEL.DiffusionInst.NUM_PROPOSALS
-        self.dynamic_block = DynamicBlock(hidden_dim, num_heads, pooler_resolution)
-
-        self.mask_layer = nn.Sequential(nn.Conv2d(hidden_dim, 256, 3, padding=1, bias=False), nn.BatchNorm2d(256),
-                                        nn.ReLU(inplace=True), nn.ConvTranspose2d(256, 128, 3, 2, 1, 1, bias=False),
+        self.mask_layer = nn.Sequential(nn.Conv2d(dim_hidden, 256, 3, padding=1), nn.BatchNorm2d(256),
+                                        nn.ReLU(inplace=True), nn.ConvTranspose2d(256, 128, 3, 2, 1, 1),
                                         nn.BatchNorm2d(128), nn.ReLU(inplace=True),
-                                        nn.Conv2d(128, 128, 3, padding=1, bias=False), nn.BatchNorm2d(128),
+                                        nn.Conv2d(128, 128, 3, padding=1), nn.BatchNorm2d(128),
                                         nn.ReLU(inplace=True), nn.Conv2d(128, num_classes, 1))
 
-    def forward(self, roi_features, ts):
+    def forward(self, time_emb, roi_features):
         # [B, N, D]
-        fc_feature = self.dynamic_block(roi_features, ts)
-        b, n, d = fc_feature.size()
+        b, n, d = time_emb.size()
         s = int(roi_features.shape[-1] ** 0.5)
 
         # [B*N, D, S, S]
-        mask_feature = (roi_features + fc_feature.unsqueeze(dim=-1)).view(b * n, d, s, -1)
+        mask_feature = (roi_features + time_emb.unsqueeze(dim=-1)).view(b * n, d, s, -1)
         # [B, N, C, 2*S, 2*S]
         pred_masks = self.mask_layer(mask_feature).view(b, n, -1, 2 * s, 2 * s)
         return pred_masks
