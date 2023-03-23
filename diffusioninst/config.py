@@ -10,7 +10,8 @@ def add_diffusioninst_config(cfg):
     cfg.MODEL.DiffusionInst.NUM_STEPS = 1000
     cfg.MODEL.DiffusionInst.SAMPLING_STEPS = 5
 
-    # attention
+    # RoI
+    cfg.MODEL.DiffusionInst.NUM_ROIS = 6
     cfg.MODEL.DiffusionInst.NUM_HEADS = 8
 
     # loss

@@ -7,7 +7,7 @@ from detectron2.structures import Boxes, ImageList, Instances
 from torch import nn
 from torchvision.ops import box_convert, clip_boxes_to_image
 
-from .head import DetectHead, MaskHead, cosine_schedule, normed_box_to_abs_box, DynamicBlock
+from .head import RoIHead, cosine_schedule, normed_box_to_abs_box, TimeEncoder
 from .loss import SetCriterion
 
 
@@ -41,13 +41,13 @@ class DiffusionInst(nn.Module):
         self.pooler = ROIPooler(pooler_resolution, pooler_scales, sampling_ratio, pooler_type)
 
         # build time head
-        num_heads = cfg.MODEL.DiffusionInst.NUM_HEADS
-        self.time_head = DynamicBlock(self.dim_features, num_heads, pooler_resolution)
+        self.time_head = TimeEncoder(self.dim_features)
 
-        # build detect head
-        self.detect_head = DetectHead(self.num_classes, self.dim_features)
-        # build mask head
-        self.mask_head = MaskHead(self.dim_features)
+        # build RoI head
+        self.num_rois = cfg.MODEL.DiffusionInst.NUM_ROIS
+        num_heads = cfg.MODEL.DiffusionInst.NUM_HEADS
+        self.roi_heads = nn.ModuleList([RoIHead(self.dim_features, num_heads, pooler_resolution, self.num_classes)
+                                        for _ in range(self.num_rois)])
 
         # build loss criterion
         self.criterion = SetCriterion(cfg)
@@ -65,16 +65,19 @@ class DiffusionInst(nn.Module):
         if self.training:
             # [B], [B, N, 4], [B, 1]
             targets, boxes, ts = self.preprocess_target(batched_inputs)
-            roi_features = torch.flatten(self.pooler(features, [Boxes(b) for b in boxes]), start_dim=-2)
-            # [B, N, D, S*S]
-            roi_features = roi_features.view(len(targets), self.num_proposals, self.dim_features, -1)
-            # [B, N, D]
-            time_emb = self.time_head(roi_features, ts)
-            # [B, N, C], [B, N, 4]
-            pred_logits, pred_boxes = self.detect_head(time_emb, boxes)
-            # [B, N, 2*S, 2*S]
-            pred_masks = self.mask_head(time_emb, roi_features)
-            output = {'pred_logits': pred_logits, 'pred_boxes': pred_boxes, 'pred_masks': pred_masks}
+            # [B, 4*D]
+            time_emb = self.time_head(ts)
+            output = []
+            obj_features = None
+            for i in range(self.num_rois):
+                roi_features = torch.flatten(self.pooler(features, [Boxes(b) for b in boxes]), start_dim=-2)
+                # [B, N, D, S*S]
+                roi_features = roi_features.view(len(targets), self.num_proposals, self.dim_features, -1)
+                # [B, N, C], [B, N, 4], [B, N, 2*S, 2*S], [B, N, D]
+                pred_logits, pred_boxes, pred_masks, obj_features = self.roi_heads[i](roi_features, time_emb, boxes,
+                                                                                      obj_features)
+                boxes = pred_boxes
+                output.append({'pred_logits': pred_logits, 'pred_boxes': pred_boxes, 'pred_masks': pred_masks})
             loss_dict = self.criterion(output, targets)
             return loss_dict
         else:
@@ -149,18 +152,20 @@ class DiffusionInst(nn.Module):
         image_size = torch.as_tensor([w, h, w, h], device=self.device).view(1, 4)
         for time_now, time_next in zip(times[:-1], times[1:]):
             boxes = normed_box_to_abs_box(x_t, image_size)
-            roi_features = torch.flatten(self.pooler(features, [Boxes(boxes)]), start_dim=-2).unsqueeze(dim=0)
-            time_emb = self.time_head(roi_features, time_now.view(1, 1))
-            # [1, N, C], [1, N, 4]
-            pred_logits, pred_boxes = self.detect_head(time_emb, boxes.unsqueeze(dim=0))
-            # [1, N, 2*S, 2*S]
-            pred_masks = self.mask_head(time_emb, roi_features)
-
+            time_emb = self.time_head(time_now.view(1, 1))
+            obj_features = None
+            for i in range(self.num_rois):
+                roi_features = torch.flatten(self.pooler(features, [Boxes(boxes)]), start_dim=-2).unsqueeze(dim=0)
+                # [1, N, C], [1, N, 4], [1, N, 2*S, 2*S], [1, N, D]
+                pred_logits, pred_boxes, pred_masks, obj_features = self.roi_heads[i](roi_features, time_emb,
+                                                                                      boxes.unsqueeze(dim=0),
+                                                                                      obj_features)
+                boxes = pred_boxes.squeeze(dim=0)
             # operate in [-1, 1] space to keep same with diffusion noise
             x_start = box_convert(pred_boxes.squeeze(dim=0) / image_size, in_fmt='xyxy', out_fmt='cxcywh')
             x_start = torch.clamp(x_start, min=0, max=1) * 2 - 1
             pred_noise = (x_t - self.alphas_cumprod[time_now].sqrt() * x_start) / (
-                        1 - self.alphas_cumprod[time_now]).sqrt()
+                    1 - self.alphas_cumprod[time_now]).sqrt()
 
             if time_next < 0:
                 x_t = x_start
