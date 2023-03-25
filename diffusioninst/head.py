@@ -97,6 +97,7 @@ class DynamicBlock(nn.Module):
 class RoIHead(nn.Module):
     def __init__(self, dim_hidden, num_heads, pooler_resolution, num_classes):
         super().__init__()
+        self.num_classes = num_classes
         self.dynamic_block = DynamicBlock(dim_hidden, num_heads, pooler_resolution)
         self.cls_layer = nn.Sequential(nn.Linear(dim_hidden, dim_hidden, False), nn.LayerNorm(dim_hidden),
                                        nn.ReLU(inplace=True))
@@ -112,6 +113,14 @@ class RoIHead(nn.Module):
                                         nn.ReLU(inplace=True), nn.Conv2d(128, 8, 3, padding=1), nn.BatchNorm2d(8),
                                         nn.ReLU(inplace=True), nn.Conv2d(8, 8, 3, padding=1), nn.BatchNorm2d(8),
                                         nn.ReLU(inplace=True), nn.Conv2d(8, 1, 1))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for p in self.parameters():
+            # initialize the bias for focal loss
+            if p.shape[-1] == self.num_classes:
+                nn.init.constant_(p, -math.log((1 - 0.01) / 0.01))
 
     def forward(self, roi_features, time_emb, boxes, obj_features):
         obj_features, fc_feature = self.dynamic_block(roi_features, time_emb, obj_features)

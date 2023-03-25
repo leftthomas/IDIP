@@ -1,3 +1,4 @@
+import copy
 import random
 
 import torch
@@ -5,7 +6,7 @@ from detectron2.modeling import META_ARCH_REGISTRY, build_backbone, detector_pos
 from detectron2.modeling.poolers import ROIPooler
 from detectron2.structures import Boxes, ImageList, Instances
 from torch import nn
-from torchvision.ops import box_convert, clip_boxes_to_image
+from torchvision.ops import box_convert, clip_boxes_to_image, batched_nms
 
 from .head import RoIHead, cosine_schedule, normed_box_to_abs_box, TimeEncoder
 from .loss import SetCriterion
@@ -46,8 +47,8 @@ class DiffusionInst(nn.Module):
         # build RoI head
         self.num_rois = cfg.MODEL.DiffusionInst.NUM_ROIS
         num_heads = cfg.MODEL.DiffusionInst.NUM_HEADS
-        self.roi_heads = nn.ModuleList([RoIHead(self.dim_features, num_heads, pooler_resolution, self.num_classes)
-                                        for _ in range(self.num_rois)])
+        roi_head = RoIHead(self.dim_features, num_heads, pooler_resolution, self.num_classes)
+        self.roi_heads = nn.ModuleList([copy.deepcopy(roi_head) for _ in range(self.num_rois)])
 
         # build loss criterion
         self.criterion = SetCriterion(cfg)
@@ -195,6 +196,13 @@ class DiffusionInst(nn.Module):
         classes = labels[indices]
         boxes = pred_boxes.view(-1, 1, 4).repeat(1, self.num_classes, 1).view(-1, 4)[indices]
         masks = pred_masks.view(-1, 1, t, t).repeat(1, self.num_classes, 1, 1).view(-1, 1, t, t)[indices]
+
+        # nms
+        keep = batched_nms(boxes, scores, classes, 0.5)
+        boxes = boxes[keep]
+        scores = scores[keep]
+        classes = classes[keep]
+        masks = masks[keep]
 
         # convert to detectron2 needed format
         result.pred_boxes = Boxes(boxes)
