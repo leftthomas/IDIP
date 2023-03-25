@@ -1,6 +1,7 @@
 import math
 import torch
 from detectron2.modeling.box_regression import Box2BoxTransform
+from mmdet.models.utils.transformer import DynamicConv
 from torch import nn
 from torchvision.ops import box_convert, clip_boxes_to_image
 
@@ -58,37 +59,24 @@ class DynamicBlock(nn.Module):
         super().__init__()
         self.atte = nn.MultiheadAttention(dim_hidden, num_heads, batch_first=True)
         self.norm = nn.LayerNorm(dim_hidden)
-        self.num_params = dim_hidden ** 2 // 4
-        self.linear1 = nn.Linear(dim_hidden, 2 * self.num_params)
-        self.norm1 = nn.LayerNorm(dim_hidden // 4)
-        self.norm2 = nn.LayerNorm(dim_hidden)
-        self.relu = nn.ReLU(inplace=True)
-        self.linear2 = nn.Linear(dim_hidden * pooler_resolution ** 2, dim_hidden)
-        self.norm3 = nn.LayerNorm(dim_hidden)
-        self.time_mlp = nn.Sequential(nn.SiLU(), nn.Linear(dim_hidden * 4, dim_hidden * 2))
+        self.conv = DynamicConv(dim_hidden, input_feat_shape=pooler_resolution)
+        self.mlp = nn.Sequential(nn.SiLU(), nn.Linear(dim_hidden * 4, dim_hidden * 2))
+        self.pooler_resolution = pooler_resolution
 
     def forward(self, roi_features, time_emb, obj_features):
         pro_features = roi_features.mean(-1) if obj_features is None else obj_features
-
-        # [B, 2*D]
-        scale_shift = self.time_mlp(time_emb)
-        # [B, 1, D]
-        scale, shift = scale_shift.unsqueeze(dim=1).chunk(2, dim=-1)
-
         # [B, N, D]
         atte_features = self.atte(pro_features, pro_features, pro_features)[0]
         mixed_features = self.norm(pro_features + atte_features)
-
         b, n, d = mixed_features.size()
-        parameters = self.linear1(mixed_features)
-        param1 = parameters[:, :, :self.num_params].view(b, n, d, d // 4)
-        param2 = parameters[:, :, self.num_params:].view(b, n, d // 4, d)
-        # [B, N, S*S, D]
-        roi_features = roi_features.permute(0, 1, 3, 2)
-        obj_features = self.relu(self.norm1(torch.matmul(roi_features, param1)))
-        obj_features = self.relu(self.norm2(torch.matmul(obj_features, param2)))
         # [B, N, D]
-        obj_features = self.relu(self.norm3(self.linear2(obj_features.flatten(start_dim=-2))))
+        obj_features = self.conv(mixed_features.view(b * n, -1),
+                                 roi_features.view(b * n, d, self.pooler_resolution, -1))
+        obj_features = obj_features.view(b, n, d)
+        # [B, 2*D]
+        scale_shift = self.mlp(time_emb)
+        # [B, 1, D]
+        scale, shift = scale_shift.unsqueeze(dim=1).chunk(2, dim=-1)
         # [B, N, D]
         fc_feature = obj_features * (scale + 1) + shift
         return obj_features, fc_feature

@@ -1,7 +1,8 @@
 import torch
 import torch.nn.functional as F
 from detectron2.structures import BitMasks
-from scipy.optimize import linear_sum_assignment
+from mmdet.core.bbox.assigners import SimOTAAssigner
+from mmdet.core.bbox.iou_calculators import bbox_overlaps
 from torch import nn
 from torchvision.ops import generalized_box_iou, sigmoid_focal_loss, box_convert
 
@@ -14,13 +15,13 @@ class SetCriterion(nn.Module):
         self.l1_weight = cfg.MODEL.DiffusionInst.L1_WEIGHT
         self.giou_weight = cfg.MODEL.DiffusionInst.GIOU_WEIGHT
         self.mask_weight = cfg.MODEL.DiffusionInst.MASK_WEIGHT
-        self.matcher = HungarianMatcher(self.cls_weight, self.l1_weight, self.giou_weight, self.mask_weight)
+        self.matcher = SimOTAMatcher(self.cls_weight, self.l1_weight, self.giou_weight, self.mask_weight)
 
     def forward(self, outputs, targets):
         all_cls_loss, all_l1_loss, all_giou_loss, all_mask_loss = 0, 0, 0, 0
         for output in outputs:
             # retrieve the matching between outputs and targets
-            indices = self.matcher(output, targets)
+            indices = self.matcher.assign(output, targets)
             # [B, N, C], [B, N, 4], [B, N, 2*S, 2*S]
             pred_logits, pred_boxes, pred_masks = output['pred_logits'], output['pred_boxes'], output['pred_masks']
             b, n, t, _ = pred_masks.size()
@@ -82,8 +83,8 @@ class SetCriterion(nn.Module):
         return losses
 
 
-class HungarianMatcher(nn.Module):
-    def __init__(self, cost_cls, cost_l1, cost_giou, cost_mask, alpha=0.25, gamma=2):
+class SimOTAMatcher(SimOTAAssigner):
+    def __init__(self, cost_cls, cost_l1, cost_giou, cost_mask, alpha=0.25, gamma=2, topk=10):
         super().__init__()
         self.cost_cls = cost_cls
         self.cost_l1 = cost_l1
@@ -91,12 +92,13 @@ class HungarianMatcher(nn.Module):
         self.cost_mask = cost_mask
         self.alpha = alpha
         self.gamma = gamma
+        self.candidate_topk = topk
 
     @torch.no_grad()
-    def forward(self, outputs, targets):
+    def assign(self, outputs, targets):
         # [B, N, C], [B, N, 4], [B, N, 2*S, 2*S]
         pred_logits, pred_boxes, pred_masks = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_masks']
-        b, n, t, _ = pred_masks.size()
+        b, _, t, _ = pred_masks.size()
 
         indices = []
         for i in range(b):
@@ -106,6 +108,11 @@ class HungarianMatcher(nn.Module):
             gt_classes, gt_boxes, gt_masks = targets[i]['classes'], targets[i]['boxes'], targets[i]['masks']
             image_size = targets[i]['image_size']
             m = gt_classes.size(0)
+
+            # filter out the boxes not inside the ground truth boxes
+            valid_mask, is_in_boxes_and_center = self.get_in_gt_and_in_center_info(
+                box_convert(boxes, in_fmt='xyxy', out_fmt='cxcywh'), gt_boxes)
+            logits, boxes, masks = logits[valid_mask], boxes[valid_mask], masks[valid_mask]
 
             # compute the classification cost with focal loss
             alpha, gamma = self.alpha, self.gamma
@@ -127,7 +134,7 @@ class HungarianMatcher(nn.Module):
             # [M, 2*S, 2*S]
             gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
             # [N, M]
-            masks = masks.view(n, 1, -1)
+            masks = masks.view(-1, 1, t * t)
             gt_masks = gt_masks.view(1, m, -1)
             intersection = (masks * gt_masks).sum(dim=-1)
             union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
@@ -135,20 +142,11 @@ class HungarianMatcher(nn.Module):
 
             # final cost matrix
             cost = self.cost_cls * cls_cost + self.cost_l1 * l1_cost + self.cost_giou * giou_cost \
-                   + self.cost_mask * mask_cost
+                   + self.cost_mask * mask_cost + (~is_in_boxes_and_center) * 100000.0
 
-            # filter out the boxes not inside the ground truth boxes
-            center = box_convert(boxes, in_fmt='xyxy', out_fmt='cxcywh')[:, :2]
-            center_x, center_y = center[:, 0].unsqueeze(1), center[:, 1].unsqueeze(1)
-            b_l = center_x > gt_boxes[:, 0].unsqueeze(0)
-            b_r = center_x < gt_boxes[:, 2].unsqueeze(0)
-            b_t = center_y > gt_boxes[:, 1].unsqueeze(0)
-            b_b = center_y < gt_boxes[:, 3].unsqueeze(0)
-            is_in_boxes = b_l & b_r & b_t & b_b
-            cost[~is_in_boxes] = cost[~is_in_boxes] + 1e8
-
-            row_ind, col_ind = linear_sum_assignment(cost.cpu())
-            row_ind, col_ind = torch.as_tensor(row_ind), torch.as_tensor(col_ind)
+            pairwise_ious = bbox_overlaps(boxes, gt_boxes)
+            _, col_ind = self.dynamic_k_matching(cost, pairwise_ious, m, valid_mask)
+            row_ind, col_ind = torch.as_tensor(torch.nonzero(valid_mask).squeeze(dim=-1)), torch.as_tensor(col_ind)
             indices.append(torch.stack((row_ind, col_ind), dim=-1).to(cost.device))
         # [B, M, M]
         return indices
