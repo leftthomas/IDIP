@@ -12,10 +12,6 @@ MODEL:
     IN_FEATURES: [ 'res3', 'res4', 'res5' ]
   ROI_HEADS:
     IN_FEATURES: [ 'p3', 'p4', 'p5' ]
-  ROI_BOX_HEAD:
-    POOLER_TYPE: 'ROIAlignV2'
-    POOLER_RESOLUTION: 7
-    POOLER_SAMPLING_RATIO: 2
   DiffusionInst:
     NUM_PROPOSALS: 300
     NUM_CLASSES: 80
