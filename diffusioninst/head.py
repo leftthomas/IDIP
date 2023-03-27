@@ -54,9 +54,9 @@ class TimeEncoder(nn.Module):
         return time_emb
 
 
-# ref Sparse R-CNN: End-to-End Object Detection with Learnable Proposals
 class DiffusionRoiHead(SparseRoIHead):
     def __init__(self, dim_hidden, strides, num_classes):
+        # ref Sparse R-CNN: End-to-End Object Detection with Learnable Proposals
         roi_extractor = dict(type='SingleRoIExtractor',
                              roi_layer=dict(type='RoIAlign', output_size=7, sampling_ratio=2),
                              out_channels=dim_hidden, featmap_strides=strides)
@@ -85,7 +85,7 @@ class DiffusionRoiHead(SparseRoIHead):
             bbox_head = self.bbox_head[stage]
             # [B*N, D, S, S]
             feats = roi_extractor(features, rois)
-            object_feats = feats.view(b, n, d, -1).mean(-1) if object_feats is None else object_feats
+            object_feats = feats.reshape(b, n, d, -1).mean(-1) if object_feats is None else object_feats
 
             scale_shift = self.mlps[stage](time_emb)
             # [B, 1, D]
@@ -96,12 +96,12 @@ class DiffusionRoiHead(SparseRoIHead):
             # [B, N, C], [B, N, 4], [B, N, D], [B, N, D]
             cls_score, box_delta, object_feats, attn_feats = bbox_head(feats, object_feats)
             # [B*N, 4]
-            pred_box = self.transform.apply_deltas(box_delta.view(-1, 4), rois[:, 1:])
+            pred_box = self.transform.apply_deltas(box_delta.reshape(-1, 4), rois[:, 1:])
             proposals = torch.tensor_split(pred_box, b)
 
             mask_head = self.mask_head[stage]
             # [B*N, C, 2*S, 2*S]
             pred_mask = mask_head(feats, attn_feats)
-            results.append({'pred_logits': cls_score, 'pred_boxes': pred_box.view(b, n, -1),
-                            'pred_masks': pred_mask.view(b, n, *pred_mask.shape[1:])})
+            results.append({'pred_logits': cls_score, 'pred_boxes': pred_box.reshape(b, n, -1),
+                            'pred_masks': pred_mask.reshape(b, n, *pred_mask.shape[1:])})
         return results

@@ -11,7 +11,6 @@ from torchvision.ops import generalized_box_iou, sigmoid_focal_loss, box_convert
 class SetCriterion(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.num_classes = cfg.MODEL.DiffusionInst.NUM_CLASSES
         self.cls_weight = cfg.MODEL.DiffusionInst.CLS_WEIGHT
         self.l1_weight = cfg.MODEL.DiffusionInst.L1_WEIGHT
         self.giou_weight = cfg.MODEL.DiffusionInst.GIOU_WEIGHT
@@ -59,8 +58,8 @@ class SetCriterion(nn.Module):
                 masks = masks.sigmoid()
                 # [K, 2*S, 2*S]
                 gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
-                masks = masks[torch.arange(k).view(k, 1), gt_classes.view(k, 1), :, :].view(k, -1)
-                gt_masks = gt_masks.view(k, -1)
+                masks = masks[torch.arange(k).reshape(k, 1), gt_classes.reshape(k, 1), :, :].reshape(k, -1)
+                gt_masks = gt_masks.reshape(k, -1)
                 intersection = (masks * gt_masks).sum(dim=-1)
                 union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
                 mask_loss = (1 - (2 * intersection / union)).sum()
@@ -83,13 +82,12 @@ class SetCriterion(nn.Module):
 
 
 class SimOTAMatcher(SimOTAAssigner):
-    def __init__(self, cost_cls, cost_l1, cost_giou, cost_mask, topk=10):
+    def __init__(self, cost_cls, cost_l1, cost_giou, cost_mask):
         super().__init__()
         self.cls_cost = FocalLossCost(cost_cls, eps=1e-8)
         self.cost_l1 = cost_l1
         self.cost_giou = cost_giou
         self.cost_mask = cost_mask
-        self.candidate_topk = topk
 
     @torch.no_grad()
     def assign(self, outputs, targets):
@@ -128,12 +126,12 @@ class SimOTAMatcher(SimOTAAssigner):
             # [M, 2*S, 2*S]
             gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
             # [N, M]
-            masks = masks.view(-1, 1, c, t * t)
-            gt_masks = gt_masks.view(1, m, 1, -1)
+            masks = masks.reshape(-1, 1, c, t * t)
+            gt_masks = gt_masks.reshape(1, m, 1, -1)
             intersection = (masks * gt_masks).sum(dim=-1)
             union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
             mask_cost = self.cost_mask * (1 - (2 * intersection / union))
-            mask_cost = mask_cost[:, torch.arange(m).view(m, 1), gt_classes.view(m, 1)].squeeze(dim=-1)
+            mask_cost = mask_cost[:, torch.arange(m).reshape(m, 1), gt_classes.reshape(m, 1)].squeeze(dim=-1)
 
             # final cost matrix
             cost = cls_cost + l1_cost + giou_cost + mask_cost + (~is_in_boxes_and_center) * 100000.0

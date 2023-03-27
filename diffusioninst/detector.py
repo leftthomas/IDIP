@@ -42,8 +42,8 @@ class DiffusionInst(nn.Module):
         # build loss criterion
         self.criterion = SetCriterion(cfg)
 
-        self.register_buffer('pixel_mean', torch.as_tensor(cfg.MODEL.PIXEL_MEAN).view(3, 1, 1))
-        self.register_buffer('pixel_std', torch.as_tensor(cfg.MODEL.PIXEL_STD).view(3, 1, 1))
+        self.register_buffer('pixel_mean', torch.as_tensor(cfg.MODEL.PIXEL_MEAN).reshape(3, 1, 1))
+        self.register_buffer('pixel_std', torch.as_tensor(cfg.MODEL.PIXEL_STD).reshape(3, 1, 1))
         self.to(self.device)
 
     def forward(self, batched_inputs):
@@ -80,7 +80,7 @@ class DiffusionInst(nn.Module):
             gt_boxes = instances.gt_boxes.tensor
             gt_masks = instances.gt_masks
             h, w = instances.image_size
-            image_size = torch.as_tensor([w, h, w, h], device=self.device).view(1, 4)
+            image_size = torch.as_tensor([w, h, w, h], device=self.device).reshape(1, 4)
 
             crpt_boxes, t = self.prepare_diffusion(gt_boxes, image_size)
             diffused_boxes.append(crpt_boxes)
@@ -125,10 +125,10 @@ class DiffusionInst(nn.Module):
         times = reversed(torch.linspace(-1, self.num_steps - 1, self.sampling_steps + 1, device=self.device).long())
         x_t = torch.randn((self.num_proposals, 4), device=self.device)
         h, w = batched_inputs[0]['image'].size()[1:]
-        image_size = torch.as_tensor([w, h, w, h], device=self.device).view(1, 4)
+        image_size = torch.as_tensor([w, h, w, h], device=self.device).reshape(1, 4)
         for time_now, time_next in zip(times[:-1], times[1:]):
             boxes = normed_box_to_abs_box(x_t, image_size)
-            time_emb = self.time_head(time_now.view(1, 1))
+            time_emb = self.time_head(time_now.reshape(1, 1))
             output = self.roi_head(features, boxes.unsqueeze(dim=0), time_emb)[-1]
             # [1, N, C], [1, N, 4], [1, N, C, 2*S, 2*S]
             pred_logits, pred_boxes, pred_masks = output['pred_logits'], output['pred_boxes'], output['pred_masks']
@@ -164,8 +164,8 @@ class DiffusionInst(nn.Module):
         # select the top N predictions
         scores, indices = pred_logits.flatten(0, 1).topk(self.num_proposals, sorted=False)
         classes = labels[indices]
-        boxes = pred_boxes.view(-1, 1, 4).repeat(1, self.num_classes, 1).view(-1, 4)[indices]
-        masks = pred_masks.view(-1, 1, t, t)[indices]
+        boxes = pred_boxes.reshape(-1, 1, 4).repeat(1, self.num_classes, 1).reshape(-1, 4)[indices]
+        masks = pred_masks.reshape(-1, 1, t, t)[indices]
 
         # nms
         keep = batched_nms(boxes, scores, classes, 0.5)
