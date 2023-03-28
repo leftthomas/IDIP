@@ -97,7 +97,7 @@ class DiffusionRoiHead(SparseRoIHead):
             cls_score, box_delta, object_feats, attn_feats = bbox_head(feats, object_feats)
             # [B*N, 4]
             pred_box = self.transform.apply_deltas(box_delta.reshape(-1, 4), rois[:, 1:])
-            proposals = torch.tensor_split(pred_box, b)
+            proposals = torch.tensor_split(pred_box.detach(), b)
 
             mask_head = self.mask_head[stage]
             # [B*N, C, 2*S, 2*S]
