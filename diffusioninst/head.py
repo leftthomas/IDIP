@@ -81,10 +81,8 @@ class DiffusionRoiHead(SparseRoIHead):
         for stage in range(self.num_stages):
             # [B*N, 5]
             rois = bbox2roi(proposals)
-            roi_extractor = self.bbox_roi_extractor[stage]
-            bbox_head = self.bbox_head[stage]
             # [B*N, D, S, S]
-            feats = roi_extractor(features, rois)
+            feats = self.bbox_roi_extractor[stage](features, rois)
             object_feats = feats.reshape(b, n, d, -1).mean(-1) if object_feats is None else object_feats
 
             scale_shift = self.mlps[stage](time_emb)
@@ -93,15 +91,15 @@ class DiffusionRoiHead(SparseRoIHead):
             # [B, N, D]
             object_feats = object_feats * (scale + 1) + shift
 
-            # [B, N, C], [B, N, 4], [B, N, D], [B, N, D]
-            cls_score, box_delta, object_feats, attn_feats = bbox_head(feats, object_feats)
+            # [B, N, C], [B, N, 4], [B, N, D]
+            cls_score, box_delta, temp_feats, _ = self.bbox_head[stage](feats, object_feats)
             # [B*N, 4]
             pred_box = self.transform.apply_deltas(box_delta.reshape(-1, 4), rois[:, 1:])
             proposals = torch.tensor_split(pred_box.detach(), b)
 
-            mask_head = self.mask_head[stage]
             # [B*N, C, 2*S, 2*S]
-            pred_mask = mask_head(feats, attn_feats)
+            pred_mask = self.mask_head[stage](feats, object_feats)
+            object_feats = temp_feats
             results.append({'pred_logits': cls_score, 'pred_boxes': pred_box.reshape(b, n, -1),
                             'pred_masks': pred_mask.reshape(b, n, *pred_mask.shape[1:])})
         return results

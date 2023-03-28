@@ -111,13 +111,13 @@ class SimOTAMatcher(SimOTAAssigner):
 
             assert len(logits) > 0, 'No valid boxes in the image'
 
-            # [N, M]
+            # [K, M]
             cls_cost = self.cls_cost(logits, gt_classes)
 
             # compute the box cost with L1 loss and GIoU loss in normalized coordinates
             norm_boxes = boxes / image_size
             norm_gt_boxes = gt_boxes / image_size
-            # [N, M]
+            # [K, M]
             l1_cost = self.cost_l1 * torch.cdist(norm_boxes, norm_gt_boxes, p=1)
             giou_cost = self.cost_giou * (1 - generalized_box_iou(norm_boxes, norm_gt_boxes))
 
@@ -125,7 +125,7 @@ class SimOTAMatcher(SimOTAAssigner):
             masks = masks.sigmoid()
             # [M, 2*S, 2*S]
             gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
-            # [N, M]
+            # [K, M]
             masks = masks.reshape(-1, 1, c, t * t)
             gt_masks = gt_masks.reshape(1, m, 1, -1)
             intersection = (masks * gt_masks).sum(dim=-1)
@@ -140,6 +140,5 @@ class SimOTAMatcher(SimOTAAssigner):
             _, col_ind = self.dynamic_k_matching(cost, pairwise_ious, m, valid_mask)
             row_ind, col_ind = torch.as_tensor(torch.nonzero(valid_mask).squeeze(dim=-1)), torch.as_tensor(col_ind)
             indices.append(torch.stack((row_ind, col_ind), dim=-1).to(cost.device))
-            assert len(row_ind) > 0, 'No valid matching is found'
         # [B, K, K]
         return indices

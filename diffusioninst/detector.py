@@ -162,7 +162,7 @@ class DiffusionInst(nn.Module):
         # [N*C]
         labels = torch.arange(self.num_classes, device=self.device).repeat(self.num_proposals)
         # select the top N predictions
-        scores, indices = pred_logits.flatten(0, 1).topk(self.num_proposals, sorted=False)
+        scores, indices = pred_logits.flatten().topk(self.num_proposals, sorted=False)
         classes = labels[indices]
         boxes = pred_boxes.reshape(-1, 1, 4).repeat(1, self.num_classes, 1).reshape(-1, 4)[indices]
         masks = pred_masks.reshape(-1, 1, t, t)[indices]
