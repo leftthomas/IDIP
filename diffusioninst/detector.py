@@ -36,8 +36,15 @@ class DiffusionInst(nn.Module):
         self.time_head = TimeEncoder(self.dim_features)
 
         # build RoI head
-        strides = [self.backbone.output_shape()[k].stride for k in self.in_features]
-        self.roi_head = DiffusionRoiHead(self.dim_features, strides, self.num_classes)
+        strides = [1 / self.backbone.output_shape()[k].stride for k in self.in_features]
+        box_size = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        mask_size = cfg.MODEL.ROI_MASK_HEAD.POOLER_RESOLUTION
+        box_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        mask_ratio = cfg.MODEL.ROI_MASK_HEAD.POOLER_SAMPLING_RATIO
+        box_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        mask_type = cfg.MODEL.ROI_MASK_HEAD.POOLER_TYPE
+        self.roi_head = DiffusionRoiHead(self.dim_features, strides, self.num_classes, box_size, mask_size, box_ratio,
+                                         mask_ratio, box_type, mask_type)
 
         # build loss criterion
         self.criterion = SetCriterion(cfg)
