@@ -58,7 +58,7 @@ class SetCriterion(nn.Module):
                 total_giou_loss = total_giou_loss + giou_loss
 
                 # compute the mask loss with dice loss
-                masks = mask_head(feature, boxes, proposal_feat)
+                masks = mask_head(feature, boxes.detach(), proposal_feat)
                 t = masks.size(-1)
                 masks = masks.sigmoid()
                 # [K, 2*S, 2*S]

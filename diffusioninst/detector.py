@@ -172,17 +172,19 @@ class DiffusionInst(nn.Module):
         boxes = pred_boxes.reshape(-1, 1, 4).repeat(1, self.num_classes, 1).reshape(-1, 4)[indices]
         proposal_feats = proposal_feats.reshape(-1, 1, d).repeat(1, self.num_classes, 1).reshape(-1, d)[indices]
 
+        # [N, C, 2*S, 2*S]
+        masks = mask_head(features, boxes, proposal_feats)
+        n, c, t, _ = masks.size()
+        # [N, 2*S, 2*S]
+        masks = torch.sigmoid(masks).reshape(-1, 1, t, t)[indices]
+
         # nms
         keep = batched_nms(boxes, scores, classes, 0.5)
-        # [K, 4], [K], [K], [K, D]
+        # [K, 4], [K], [K], [K, 1, 2*S, 2*S]
         boxes = boxes[keep]
         scores = scores[keep]
         classes = classes[keep]
-        proposal_feats = proposal_feats[keep]
-
-        # [K, C, 2*S, 2*S]
-        masks = mask_head(features, boxes, proposal_feats)
-        masks = torch.sigmoid(masks)
+        masks = masks[keep]
 
         # convert to detectron2 needed format
         result.pred_boxes = Boxes(boxes)
