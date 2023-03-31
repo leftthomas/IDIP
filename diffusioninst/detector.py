@@ -37,14 +37,10 @@ class DiffusionInst(nn.Module):
 
         # build RoI head
         strides = [1 / self.backbone.output_shape()[k].stride for k in self.in_features]
-        box_size = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
-        mask_size = cfg.MODEL.ROI_MASK_HEAD.POOLER_RESOLUTION
-        box_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
-        mask_ratio = cfg.MODEL.ROI_MASK_HEAD.POOLER_SAMPLING_RATIO
-        box_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
-        mask_type = cfg.MODEL.ROI_MASK_HEAD.POOLER_TYPE
-        self.roi_head = DiffusionRoiHead(self.dim_features, strides, self.num_classes, box_size, mask_size, box_ratio,
-                                         mask_ratio, box_type, mask_type)
+        feat_size = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        feat_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        feat_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        self.roi_head = DiffusionRoiHead(self.dim_features, strides, self.num_classes, feat_size, feat_ratio, feat_type)
 
         # build loss criterion
         self.criterion = SetCriterion(cfg)
@@ -65,11 +61,11 @@ class DiffusionInst(nn.Module):
             # [B, 4*D]
             time_emb = self.time_head(ts)
             output = self.roi_head(features, boxes, time_emb)
-            loss_dict = self.criterion(output, targets)
+            loss_dict = self.criterion(output, targets, self.roi_head.mask_head)
             return loss_dict
         else:
             # [N, C], [N, 4], [N, C, 2*S, 2*S]
-            pred_logits, pred_boxes, pred_masks = self.ddim_sample(batched_inputs, features)
+            pred_logits, pred_boxes, pred_masks = self.ddim_sample(batched_inputs, features, self.roi_head.mask_head)
             results = self.inference(pred_logits, pred_boxes, pred_masks, batched_inputs)
             return results
 
@@ -127,7 +123,7 @@ class DiffusionInst(nn.Module):
         return crpt_boxes, t
 
     @torch.no_grad()
-    def ddim_sample(self, batched_inputs, features):
+    def ddim_sample(self, batched_inputs, features, mask_head):
         assert len(batched_inputs) == 1
         times = reversed(torch.linspace(-1, self.num_steps - 1, self.sampling_steps + 1, device=self.device).long())
         x_t = torch.randn((self.num_proposals, 4), device=self.device)
@@ -137,8 +133,12 @@ class DiffusionInst(nn.Module):
             boxes = normed_box_to_abs_box(x_t, image_size)
             time_emb = self.time_head(time_now.reshape(1, 1))
             output = self.roi_head(features, boxes.unsqueeze(dim=0), time_emb)[-1]
-            # [1, N, C], [1, N, 4], [1, N, C, 2*S, 2*S]
-            pred_logits, pred_boxes, pred_masks = output['pred_logits'], output['pred_boxes'], output['pred_masks']
+            # [1, N, C], [1, N, 4]
+            pred_logits, pred_boxes = output['pred_logits'], output['pred_boxes']
+            # [1, N, D]
+            proposal_feats = output['proposal_feat']
+            # [N, C, 2*S, 2*S]
+            pred_masks = mask_head(features, pred_boxes.squeeze(dim=0), proposal_feats.squeeze(dim=0))
             # operate in [-1, 1] space to keep same with diffusion noise
             x_start = box_convert(pred_boxes.squeeze(dim=0) / image_size, in_fmt='xyxy', out_fmt='cxcywh')
             x_start = torch.clamp(x_start, min=0, max=1) * 2 - 1
@@ -155,7 +155,7 @@ class DiffusionInst(nn.Module):
             noise = torch.randn_like(x_t)
             x_t = (x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise).to(torch.float32)
 
-        return pred_logits.squeeze(0), pred_boxes.squeeze(0), pred_masks.squeeze(0)
+        return pred_logits.squeeze(0), pred_boxes.squeeze(0), pred_masks
 
     @torch.no_grad()
     def inference(self, pred_logits, pred_boxes, pred_masks, batched_inputs):
