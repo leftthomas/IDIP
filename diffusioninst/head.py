@@ -120,8 +120,9 @@ class BoxHead(nn.Module):
 
 # ref Instances as Queries
 class MaskHead(nn.Module):
-    def __init__(self, dim_hidden, num_classes, num_convs=4):
+    def __init__(self, dim_hidden, num_classes, strides, mask_feat_size, mask_feat_ratio, mask_feat_type, num_convs=4):
         super().__init__()
+        self.extractor = ROIPooler(mask_feat_size, strides, mask_feat_ratio, mask_feat_type)
         self.convs = nn.Sequential(*[
             nn.Sequential(nn.Conv2d(dim_hidden, dim_hidden, 3, padding=1), nn.BatchNorm2d(dim_hidden),
                           nn.ReLU(inplace=True)) for _ in range(num_convs)])
@@ -129,9 +130,9 @@ class MaskHead(nn.Module):
         self.logits = nn.Conv2d(dim_hidden, num_classes, 1)
         self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, features, boxes, extractor):
+    def forward(self, features, boxes):
         # [N, D, S, S]
-        roi_feat = extractor(features, [Boxes(boxes)])
+        roi_feat = self.extractor(features, [Boxes(boxes)])
         # [N, D, 2*S, 2*S]
         x = self.relu(self.upsample(self.convs(roi_feat)))
         # [N, C, 2*S, 2*S]
@@ -140,14 +141,15 @@ class MaskHead(nn.Module):
 
 
 class DiffusionRoiHead(nn.Module):
-    def __init__(self, dim_hidden, strides, num_classes, feat_size, feat_ratio, feat_type, num_stages=6):
+    def __init__(self, dim_hidden, strides, num_classes, box_feat_size, box_feat_ratio, box_feat_type, mask_feat_size,
+                 mask_feat_ratio, mask_feat_type, num_stages=6):
         super().__init__()
         self.num_stages = num_stages
         self.num_classes = num_classes
-        self.extractor = ROIPooler(feat_size, strides, feat_ratio, feat_type)
-        self.dynamic_head = nn.ModuleList([DynamicHead(dim_hidden, feat_size) for _ in range(num_stages)])
+        self.extractor = ROIPooler(box_feat_size, strides, box_feat_ratio, box_feat_type)
+        self.dynamic_head = nn.ModuleList([DynamicHead(dim_hidden, box_feat_size) for _ in range(num_stages)])
         self.box_head = BoxHead(dim_hidden, num_classes)
-        self.mask_head = MaskHead(dim_hidden, num_classes)
+        self.mask_head = MaskHead(dim_hidden, num_classes, strides, mask_feat_size, mask_feat_ratio, mask_feat_type)
         self.transform = Box2BoxTransform(weights=(2.0, 2.0, 1.0, 1.0))
         self.reset_parameters()
 

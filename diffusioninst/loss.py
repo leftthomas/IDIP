@@ -17,11 +17,11 @@ class SetCriterion(nn.Module):
         self.mask_weight = cfg.MODEL.DiffusionInst.MASK_WEIGHT
         self.matcher = SimOTAMatcher(self.cls_weight, self.l1_weight, self.giou_weight, self.mask_weight)
 
-    def forward(self, outputs, targets, features, mask_head, extractor):
+    def forward(self, outputs, targets, features, mask_head):
         all_cls_loss, all_l1_loss, all_giou_loss, all_mask_loss = 0, 0, 0, 0
         for output in outputs:
             # retrieve the matching between outputs and targets
-            indices = self.matcher.assign(output, targets, features, mask_head, extractor)
+            indices = self.matcher.assign(output, targets, features, mask_head)
             # [B, N, C], [B, N, 4]
             pred_logits, pred_boxes = output['pred_logits'], output['pred_boxes']
             b, n, c = pred_logits.size()
@@ -55,7 +55,7 @@ class SetCriterion(nn.Module):
                 total_giou_loss = total_giou_loss + giou_loss
 
                 # compute the mask loss with dice loss
-                masks = mask_head(feature, boxes.detach(), extractor)
+                masks = mask_head(feature, boxes.detach())
                 t = masks.size(-1)
                 masks = masks.sigmoid()
                 # [K, 2*S, 2*S]
@@ -92,7 +92,7 @@ class SimOTAMatcher(SimOTAAssigner):
         self.cost_mask = cost_mask
 
     @torch.no_grad()
-    def assign(self, outputs, targets, features, mask_head, extractor):
+    def assign(self, outputs, targets, features, mask_head):
         # [B, N, C], [B, N, 4]
         pred_logits, pred_boxes = outputs['pred_logits'], outputs['pred_boxes']
         b, n, c = pred_logits.size()
@@ -112,7 +112,7 @@ class SimOTAMatcher(SimOTAAssigner):
             assert valid_mask.sum() > 0, 'No valid boxes in the image'
 
             logits, boxes = logits[valid_mask], boxes[valid_mask]
-            masks = mask_head(feature, boxes, extractor)
+            masks = mask_head(feature, boxes)
             t = masks.size(-1)
 
             # [K, M]

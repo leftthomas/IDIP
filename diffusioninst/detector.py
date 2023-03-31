@@ -37,10 +37,14 @@ class DiffusionInst(nn.Module):
 
         # build RoI head
         strides = [1 / self.backbone.output_shape()[k].stride for k in self.in_features]
-        feat_size = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
-        feat_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
-        feat_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
-        self.roi_head = DiffusionRoiHead(self.dim_features, strides, self.num_classes, feat_size, feat_ratio, feat_type)
+        box_feat_size = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        box_feat_ratio = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        box_feat_type = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        mask_feat_size = cfg.MODEL.ROI_MASK_HEAD.POOLER_RESOLUTION
+        mask_feat_ratio = cfg.MODEL.ROI_MASK_HEAD.POOLER_SAMPLING_RATIO
+        mask_feat_type = cfg.MODEL.ROI_MASK_HEAD.POOLER_TYPE
+        self.roi_head = DiffusionRoiHead(self.dim_features, strides, self.num_classes, box_feat_size, box_feat_ratio,
+                                         box_feat_type, mask_feat_size, mask_feat_ratio, mask_feat_type)
 
         # build loss criterion
         self.criterion = SetCriterion(cfg)
@@ -61,13 +65,12 @@ class DiffusionInst(nn.Module):
             # [B, 4*D]
             time_emb = self.time_head(ts)
             output = self.roi_head(features, boxes, time_emb)
-            loss_dict = self.criterion(output, targets, features, self.roi_head.mask_head, self.roi_head.extractor)
+            loss_dict = self.criterion(output, targets, features, self.roi_head.mask_head)
             return loss_dict
         else:
             # [N, C], [N, 4]
             pred_logits, pred_boxes = self.ddim_sample(batched_inputs, features)
-            results = self.inference(pred_logits, pred_boxes, batched_inputs, features, self.roi_head.mask_head,
-                                     self.roi_head.extractor)
+            results = self.inference(pred_logits, pred_boxes, batched_inputs, features, self.roi_head.mask_head)
             return results
 
     def preprocess_image(self, batched_inputs):
@@ -155,14 +158,14 @@ class DiffusionInst(nn.Module):
         return pred_logits.squeeze(0), pred_boxes.squeeze(0)
 
     @torch.no_grad()
-    def inference(self, pred_logits, pred_boxes, batched_inputs, features, mask_head, extractor):
+    def inference(self, pred_logits, pred_boxes, batched_inputs, features, mask_head):
         assert len(batched_inputs) == 1
         image_size = batched_inputs[0]['image'].size()[1:]
         result = Instances(image_size)
 
         pred_logits = torch.sigmoid(pred_logits)
         # [N, C, 2*S, 2*S]
-        pred_masks = torch.sigmoid(mask_head(features, pred_boxes, extractor))
+        pred_masks = torch.sigmoid(mask_head(features, pred_boxes))
         n, c, t, _ = pred_masks.size()
         # [N*C]
         labels = torch.arange(self.num_classes, device=self.device).repeat(self.num_proposals)
