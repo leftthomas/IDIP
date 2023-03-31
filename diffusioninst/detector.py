@@ -61,13 +61,13 @@ class DiffusionInst(nn.Module):
             # [B, 4*D]
             time_emb = self.time_head(ts)
             output = self.roi_head(features, boxes, time_emb)
-            loss_dict = self.criterion(output, targets, self.roi_head.mask_head)
+            loss_dict = self.criterion(output, targets, features, self.roi_head.mask_head, self.roi_head.extractor)
             return loss_dict
         else:
-            # [N, C], [N, 4], [N, D]
-            pred_logits, pred_boxes, proposal_feats = self.ddim_sample(batched_inputs, features)
-            results = self.inference(pred_logits, pred_boxes, proposal_feats, batched_inputs, features,
-                                     self.roi_head.mask_head)
+            # [N, C], [N, 4]
+            pred_logits, pred_boxes = self.ddim_sample(batched_inputs, features)
+            results = self.inference(pred_logits, pred_boxes, batched_inputs, features, self.roi_head.mask_head,
+                                     self.roi_head.extractor)
             return results
 
     def preprocess_image(self, batched_inputs):
@@ -136,8 +136,6 @@ class DiffusionInst(nn.Module):
             output = self.roi_head(features, boxes.unsqueeze(dim=0), time_emb)[-1]
             # [1, N, C], [1, N, 4]
             pred_logits, pred_boxes = output['pred_logits'], output['pred_boxes']
-            # [1, N, D]
-            proposal_feats = output['proposal_feat']
             # operate in [-1, 1] space to keep same with diffusion noise
             x_start = box_convert(pred_boxes.squeeze(dim=0) / image_size, in_fmt='xyxy', out_fmt='cxcywh')
             x_start = torch.clamp(x_start, min=0, max=1) * 2 - 1
@@ -154,29 +152,26 @@ class DiffusionInst(nn.Module):
             noise = torch.randn_like(x_t)
             x_t = (x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise).to(torch.float32)
 
-        return pred_logits.squeeze(0), pred_boxes.squeeze(0), proposal_feats.squeeze(0)
+        return pred_logits.squeeze(0), pred_boxes.squeeze(0)
 
     @torch.no_grad()
-    def inference(self, pred_logits, pred_boxes, proposal_feats, batched_inputs, features, mask_head):
+    def inference(self, pred_logits, pred_boxes, batched_inputs, features, mask_head, extractor):
         assert len(batched_inputs) == 1
         image_size = batched_inputs[0]['image'].size()[1:]
         result = Instances(image_size)
-        d = self.dim_features
 
         pred_logits = torch.sigmoid(pred_logits)
+        # [N, C, 2*S, 2*S]
+        pred_masks = torch.sigmoid(mask_head(features, pred_boxes, extractor))
+        n, c, t, _ = pred_masks.size()
         # [N*C]
         labels = torch.arange(self.num_classes, device=self.device).repeat(self.num_proposals)
         # select the top N predictions
         scores, indices = pred_logits.flatten().topk(self.num_proposals, sorted=False)
         classes = labels[indices]
         boxes = pred_boxes.reshape(-1, 1, 4).repeat(1, self.num_classes, 1).reshape(-1, 4)[indices]
-        proposal_feats = proposal_feats.reshape(-1, 1, d).repeat(1, self.num_classes, 1).reshape(-1, d)[indices]
-
-        # [N, C, 2*S, 2*S]
-        masks = mask_head(features, boxes, proposal_feats)
-        n, c, t, _ = masks.size()
         # [N, 2*S, 2*S]
-        masks = torch.sigmoid(masks).reshape(-1, 1, t, t)[indices]
+        masks = pred_masks.reshape(-1, 1, t, t)[indices]
 
         # nms
         keep = batched_nms(boxes, scores, classes, 0.5)

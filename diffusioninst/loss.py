@@ -17,24 +17,21 @@ class SetCriterion(nn.Module):
         self.mask_weight = cfg.MODEL.DiffusionInst.MASK_WEIGHT
         self.matcher = SimOTAMatcher(self.cls_weight, self.l1_weight, self.giou_weight, self.mask_weight)
 
-    def forward(self, outputs, targets, mask_head):
+    def forward(self, outputs, targets, features, mask_head, extractor):
         all_cls_loss, all_l1_loss, all_giou_loss, all_mask_loss = 0, 0, 0, 0
         for output in outputs:
             # retrieve the matching between outputs and targets
-            indices = self.matcher.assign(output, targets, mask_head)
+            indices = self.matcher.assign(output, targets, features, mask_head, extractor)
             # [B, N, C], [B, N, 4]
-            pred_logits, pred_boxes, features = output['pred_logits'], output['pred_boxes'], output['features']
-            # [B, N, D]
-            proposal_feats = output['proposal_feat']
+            pred_logits, pred_boxes = output['pred_logits'], output['pred_boxes']
             b, n, c = pred_logits.size()
 
             num_instances, total_cls_loss, total_l1_loss, total_giou_loss, total_mask_loss = 0, 0, 0, 0, 0
             for i in range(b):
                 row_ind, col_ind = indices[i][:, 0], indices[i][:, 1]
-                # [K, C], [K, 4], [K, D]
+                # [K, C], [K, 4]
                 logits = torch.index_select(pred_logits[i], dim=0, index=row_ind)
                 boxes = torch.index_select(pred_boxes[i], dim=0, index=row_ind)
-                proposal_feat = torch.index_select(proposal_feats[i], dim=0, index=row_ind)
                 feature = [feat[i].unsqueeze(dim=0) for feat in features]
                 # [K], [K, 4], [K, H, W]
                 gt_classes = torch.index_select(targets[i]['classes'], dim=0, index=col_ind)
@@ -58,7 +55,7 @@ class SetCriterion(nn.Module):
                 total_giou_loss = total_giou_loss + giou_loss
 
                 # compute the mask loss with dice loss
-                masks = mask_head(feature, boxes.detach(), proposal_feat)
+                masks = mask_head(feature, boxes.detach(), extractor)
                 t = masks.size(-1)
                 masks = masks.sigmoid()
                 # [K, 2*S, 2*S]
@@ -95,18 +92,15 @@ class SimOTAMatcher(SimOTAAssigner):
         self.cost_mask = cost_mask
 
     @torch.no_grad()
-    def assign(self, outputs, targets, mask_head):
+    def assign(self, outputs, targets, features, mask_head, extractor):
         # [B, N, C], [B, N, 4]
-        pred_logits, pred_boxes, features = outputs['pred_logits'], outputs['pred_boxes'], outputs['features']
-        # [B, N, D]
-        proposal_feats = outputs['proposal_feat']
+        pred_logits, pred_boxes = outputs['pred_logits'], outputs['pred_boxes']
         b, n, c = pred_logits.size()
 
         indices = []
         for i in range(b):
-            # [N, C], [N, 4], [N, D]
-            logits, boxes, proposal_feat = pred_logits[i], pred_boxes[i], proposal_feats[i]
-            feature = [feat[i].unsqueeze(dim=0) for feat in features]
+            # [N, C], [N, 4]
+            logits, boxes, feature = pred_logits[i], pred_boxes[i], [feat[i].unsqueeze(dim=0) for feat in features]
             # [M], [M, 4], [M, H, W]
             gt_classes, gt_boxes, gt_masks = targets[i]['classes'], targets[i]['boxes'], targets[i]['masks']
             image_size = targets[i]['image_size']
@@ -117,8 +111,8 @@ class SimOTAMatcher(SimOTAAssigner):
                 box_convert(boxes, in_fmt='xyxy', out_fmt='cxcywh'), gt_boxes)
             assert valid_mask.sum() > 0, 'No valid boxes in the image'
 
-            logits, boxes, proposal_feat = logits[valid_mask], boxes[valid_mask], proposal_feat[valid_mask]
-            masks = mask_head(feature, boxes, proposal_feat)
+            logits, boxes = logits[valid_mask], boxes[valid_mask]
+            masks = mask_head(feature, boxes, extractor)
             t = masks.size(-1)
 
             # [K, M]

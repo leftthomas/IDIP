@@ -120,22 +120,20 @@ class BoxHead(nn.Module):
 
 # ref Instances as Queries
 class MaskHead(nn.Module):
-    def __init__(self, dim_hidden, num_classes, feat_size, extractor, num_convs=4):
+    def __init__(self, dim_hidden, num_classes, num_convs=4):
         super().__init__()
-        self.instance_conv = DynamicConv(dim_hidden, input_feat_shape=feat_size, with_proj=False)
-        self.convs = nn.Sequential(*[nn.Conv2d(dim_hidden, dim_hidden, 3, padding=1) for _ in range(num_convs)])
+        self.convs = nn.Sequential(*[
+            nn.Sequential(nn.Conv2d(dim_hidden, dim_hidden, 3, padding=1), nn.BatchNorm2d(dim_hidden),
+                          nn.ReLU(inplace=True)) for _ in range(num_convs)])
         self.upsample = nn.ConvTranspose2d(dim_hidden, dim_hidden, kernel_size=2, stride=2)
         self.logits = nn.Conv2d(dim_hidden, num_classes, 1)
         self.relu = nn.ReLU(inplace=True)
-        self.extractor = extractor
 
-    def forward(self, features, boxes, proposal_feat):
+    def forward(self, features, boxes, extractor):
         # [N, D, S, S]
-        roi_feat = self.extractor(features, [Boxes(boxes)])
-        iic_feat = self.instance_conv(proposal_feat, roi_feat)
-        x = iic_feat.permute(0, 2, 1).reshape(roi_feat.size())
+        roi_feat = extractor(features, [Boxes(boxes)])
         # [N, D, 2*S, 2*S]
-        x = self.relu(self.upsample(self.convs(x)))
+        x = self.relu(self.upsample(self.convs(roi_feat)))
         # [N, C, 2*S, 2*S]
         pred_mask = self.logits(x)
         return pred_mask
@@ -149,7 +147,7 @@ class DiffusionRoiHead(nn.Module):
         self.extractor = ROIPooler(feat_size, strides, feat_ratio, feat_type)
         self.dynamic_head = nn.ModuleList([DynamicHead(dim_hidden, feat_size) for _ in range(num_stages)])
         self.box_head = BoxHead(dim_hidden, num_classes)
-        self.mask_head = MaskHead(dim_hidden, num_classes, feat_size, self.extractor)
+        self.mask_head = MaskHead(dim_hidden, num_classes)
         self.transform = Box2BoxTransform(weights=(2.0, 2.0, 1.0, 1.0))
         self.reset_parameters()
 
@@ -176,6 +174,5 @@ class DiffusionRoiHead(nn.Module):
             # [B, N, 4]
             pred_box = self.transform.apply_deltas(pred_delta.reshape(-1, 4), boxes.reshape(-1, 4)).reshape(b, n, -1)
             boxes = pred_box.detach()
-            results.append({'pred_logits': pred_logit, 'pred_boxes': pred_box, 'features': features,
-                            'proposal_feat': proposal_feat})
+            results.append({'pred_logits': pred_logit, 'pred_boxes': pred_box})
         return results
