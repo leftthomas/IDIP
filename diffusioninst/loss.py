@@ -115,11 +115,11 @@ class SimOTAMatcher(SimOTAAssigner):
             # filter out the boxes not inside the ground truth boxes
             valid_mask, is_in_boxes_and_center = self.get_in_gt_and_in_center_info(
                 box_convert(boxes, in_fmt='xyxy', out_fmt='cxcywh'), gt_boxes)
+            assert valid_mask.sum() > 0, 'No valid boxes in the image'
+
             logits, boxes, proposal_feat = logits[valid_mask], boxes[valid_mask], proposal_feat[valid_mask]
             masks = mask_head(feature, boxes, proposal_feat)
             t = masks.size(-1)
-
-            assert len(logits) > 0, 'No valid boxes in the image'
 
             # [K, M]
             cls_cost = self.cls_cost(logits, gt_classes)
