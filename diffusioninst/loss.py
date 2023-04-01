@@ -45,13 +45,13 @@ class SetCriterion(nn.Module):
                 cls_loss = sigmoid_focal_loss(logits, F.one_hot(gt_classes, c).float(), reduction='sum')
                 total_cls_loss = total_cls_loss + cls_loss
 
-                # compute the box loss with L1 loss and GIoU loss in normalized coordinates
+                # compute the box loss with L1 loss in normalized coordinates
                 norm_boxes = boxes / image_size
                 norm_gt_boxes = gt_boxes / image_size
                 l1_loss = F.l1_loss(norm_boxes, norm_gt_boxes, reduction='sum')
                 total_l1_loss = total_l1_loss + l1_loss
-
-                giou_loss = torch.diag(1 - generalized_box_iou(norm_boxes, norm_gt_boxes)).sum()
+                # compute the box loss with GIoU loss in absolute coordinates
+                giou_loss = torch.diag(1 - generalized_box_iou(boxes, gt_boxes)).sum()
                 total_giou_loss = total_giou_loss + giou_loss
 
                 # compute the mask loss with dice loss
@@ -118,12 +118,13 @@ class SimOTAMatcher(SimOTAAssigner):
             # [K, M]
             cls_cost = self.cls_cost(logits, gt_classes)
 
-            # compute the box cost with L1 loss and GIoU loss in normalized coordinates
+            # compute the box cost with L1 loss in normalized coordinates
             norm_boxes = boxes / image_size
             norm_gt_boxes = gt_boxes / image_size
             # [K, M]
             l1_cost = self.cost_l1 * torch.cdist(norm_boxes, norm_gt_boxes, p=1)
-            giou_cost = self.cost_giou * (1 - generalized_box_iou(norm_boxes, norm_gt_boxes))
+            # compute the box cost with GIoU loss in absolute coordinates
+            giou_cost = self.cost_giou * (1 - generalized_box_iou(boxes, gt_boxes))
 
             # compute the mask cost with dice loss
             masks = masks.sigmoid()
