@@ -69,9 +69,7 @@ class DynamicHead(nn.Module):
                                  nn.Linear(feedforward_channels, dim_hidden))
         self.ffn_norm = nn.LayerNorm(dim_hidden)
 
-        self.time_mlp = nn.Sequential(nn.SiLU(), nn.Linear(dim_hidden * 4, dim_hidden * 2))
-
-    def forward(self, roi_feat, proposal_feat, time_emb):
+    def forward(self, roi_feat, proposal_feat):
         b, n, d = proposal_feat.size()
 
         # self attention
@@ -87,13 +85,7 @@ class DynamicHead(nn.Module):
         ffn_feat = self.ffn(obj_feat)
         obj_feat = self.ffn_norm(obj_feat + ffn_feat).reshape(b, n, -1)
 
-        scale_shift = self.time_mlp(time_emb)
-        # [B, 1, D], [B, 1, D]
-        scale, shift = scale_shift.unsqueeze(dim=1).chunk(2, dim=-1)
-        # [B, N, D]
-        fc_feat = obj_feat * (scale + 1) + shift
-
-        return fc_feat
+        return obj_feat
 
 
 class BoxHead(nn.Module):
@@ -107,10 +99,17 @@ class BoxHead(nn.Module):
                                                      nn.LayerNorm(dim_hidden), nn.ReLU(inplace=True)) for _
                                        in range(num_reg_fcs)])
         self.fc_reg = nn.Linear(dim_hidden, 4)
+        self.time_mlp = nn.Sequential(nn.SiLU(), nn.Linear(dim_hidden * 4, dim_hidden * 2))
 
-    def forward(self, proposal_feat):
-        cls_feat = self.cls_fcs(proposal_feat)
-        reg_feat = self.reg_fcs(proposal_feat)
+    def forward(self, obj_feat, time_emb):
+        scale_shift = self.time_mlp(time_emb)
+        # [B, 1, D], [B, 1, D]
+        scale, shift = scale_shift.unsqueeze(dim=1).chunk(2, dim=-1)
+        # [B, N, D]
+        fc_feat = obj_feat * (scale + 1) + shift
+
+        cls_feat = self.cls_fcs(fc_feat)
+        reg_feat = self.reg_fcs(fc_feat)
 
         cls_logit = self.fc_cls(cls_feat)
         box_delta = self.fc_reg(reg_feat)
@@ -170,9 +169,9 @@ class DiffusionRoiHead(nn.Module):
             # [B, N, D]
             proposal_feat = torch.flatten(roi_feat, start_dim=-2).mean(-1).reshape(b, n, -1) \
                 if proposal_feat is None else proposal_feat
-            proposal_feat = self.dynamic_head[stage](roi_feat, proposal_feat, time_emb)
+            proposal_feat = self.dynamic_head[stage](roi_feat, proposal_feat)
             # [B, N, C], [B, N, 4]
-            pred_logit, pred_delta = self.box_head(proposal_feat)
+            pred_logit, pred_delta = self.box_head(proposal_feat, time_emb)
             # [B, N, 4]
             pred_box = self.transform.apply_deltas(pred_delta.reshape(-1, 4), boxes.reshape(-1, 4)).reshape(b, n, -1)
             boxes = pred_box.detach()
