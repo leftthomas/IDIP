@@ -29,19 +29,21 @@ class SetCriterion(nn.Module):
             num_instances, total_cls_loss, total_l1_loss, total_giou_loss, total_mask_loss = 0, 0, 0, 0, 0
             for i in range(b):
                 valid_mask, gt_ind = indices[i][0], indices[i][1]
-                # [K, C], [K, 4]
-                logits, boxes = pred_logits[i][valid_mask], pred_boxes[i][valid_mask]
+                # [N, C], [K, 4]
+                logits, boxes = pred_logits[i], pred_boxes[i][valid_mask]
                 feature = [feat[i].unsqueeze(dim=0) for feat in features]
                 # [K], [K, 4], [K, H, W]
-                gt_classes = torch.index_select(targets[i]['classes'], dim=0, index=gt_ind)
-                gt_boxes = torch.index_select(targets[i]['boxes'], dim=0, index=gt_ind)
-                gt_masks = BitMasks(torch.index_select(targets[i]['masks'].tensor, dim=0, index=gt_ind))
+                gt_classes = targets[i]['classes'][gt_ind]
+                gt_boxes = targets[i]['boxes'][gt_ind]
+                gt_masks = BitMasks(targets[i]['masks'].tensor[gt_ind])
 
                 image_size, k = targets[i]['image_size'], gt_classes.size(0)
                 num_instances += k
 
                 # compute the classification loss with focal loss
-                cls_loss = sigmoid_focal_loss(logits, F.one_hot(gt_classes, c).float(), reduction='sum')
+                labels = torch.zeros_like(logits)
+                labels[valid_mask] = F.one_hot(gt_classes, c).float()
+                cls_loss = sigmoid_focal_loss(logits, labels, reduction='sum')
                 total_cls_loss = total_cls_loss + cls_loss
 
                 # compute the box loss with L1 loss in normalized coordinates
