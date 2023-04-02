@@ -28,15 +28,14 @@ class SetCriterion(nn.Module):
 
             num_instances, total_cls_loss, total_l1_loss, total_giou_loss, total_mask_loss = 0, 0, 0, 0, 0
             for i in range(b):
-                row_ind, col_ind = indices[i][:, 0], indices[i][:, 1]
+                valid_mask, gt_ind = indices[i][0], indices[i][1]
                 # [K, C], [K, 4]
-                logits = torch.index_select(pred_logits[i], dim=0, index=row_ind)
-                boxes = torch.index_select(pred_boxes[i], dim=0, index=row_ind)
+                logits, boxes = pred_logits[i][valid_mask], pred_boxes[i][valid_mask]
                 feature = [feat[i].unsqueeze(dim=0) for feat in features]
                 # [K], [K, 4], [K, H, W]
-                gt_classes = torch.index_select(targets[i]['classes'], dim=0, index=col_ind)
-                gt_boxes = torch.index_select(targets[i]['boxes'], dim=0, index=col_ind)
-                gt_masks = BitMasks(torch.index_select(targets[i]['masks'].tensor, dim=0, index=col_ind))
+                gt_classes = torch.index_select(targets[i]['classes'], dim=0, index=gt_ind)
+                gt_boxes = torch.index_select(targets[i]['boxes'], dim=0, index=gt_ind)
+                gt_masks = BitMasks(torch.index_select(targets[i]['masks'].tensor, dim=0, index=gt_ind))
 
                 image_size, k = targets[i]['image_size'], gt_classes.size(0)
                 num_instances += k
@@ -55,12 +54,11 @@ class SetCriterion(nn.Module):
                 total_giou_loss = total_giou_loss + giou_loss
 
                 # compute the mask loss with dice loss
-                masks = mask_head(feature, boxes.detach())
+                masks = torch.sigmoid(mask_head(feature, boxes.detach()))
                 t = masks.size(-1)
-                masks = masks.sigmoid()
                 # [K, 2*S, 2*S]
                 gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
-                masks = masks[torch.arange(k).reshape(k, 1), gt_classes.reshape(k, 1), :, :].reshape(k, -1)
+                masks = masks[torch.arange(k), gt_classes, :, :].reshape(k, -1)
                 gt_masks = gt_masks.reshape(k, -1)
                 intersection = (masks * gt_masks).sum(dim=-1)
                 union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
@@ -112,8 +110,8 @@ class SimOTAMatcher(SimOTAAssigner):
             assert valid_mask.sum() > 0, 'No valid boxes in the image'
 
             logits, boxes = logits[valid_mask], boxes[valid_mask]
-            masks = mask_head(feature, boxes)
-            t = masks.size(-1)
+            # masks = torch.sigmoid(mask_head(feature, boxes))
+            # t = masks.size(-1)
 
             # [K, M]
             cls_cost = self.cls_cost(logits, gt_classes)
@@ -126,24 +124,21 @@ class SimOTAMatcher(SimOTAAssigner):
             # compute the box cost with GIoU loss in absolute coordinates
             giou_cost = self.cost_giou * (1 - generalized_box_iou(boxes, gt_boxes))
 
-            # compute the mask cost with dice loss
-            masks = masks.sigmoid()
-            # [M, 2*S, 2*S]
-            gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
-            # [K, M]
-            masks = masks.reshape(-1, 1, c, t * t)
-            gt_masks = gt_masks.reshape(1, m, 1, -1)
-            intersection = (masks * gt_masks).sum(dim=-1)
-            union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
-            mask_cost = self.cost_mask * (1 - (2 * intersection / union))
-            mask_cost = mask_cost[:, torch.arange(m).reshape(m, 1), gt_classes.reshape(m, 1)].squeeze(dim=-1)
+            # # compute the mask cost with dice loss
+            # # [M, 2*S, 2*S]
+            # gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
+            # # [K, M]
+            # masks = masks.reshape(-1, 1, c, t * t)
+            # gt_masks = gt_masks.reshape(1, m, 1, -1)
+            # intersection = (masks * gt_masks).sum(dim=-1)
+            # union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
+            # mask_cost = self.cost_mask * (1 - (2 * intersection / union))
+            # mask_cost = mask_cost[:, torch.arange(m), gt_classes].squeeze(dim=-1)
 
             # final cost matrix
-            cost = cls_cost + l1_cost + giou_cost + mask_cost + (~is_in_boxes_and_center) * 100000.0
+            cost = cls_cost + l1_cost + giou_cost + (~is_in_boxes_and_center) * 100000.0
 
             pairwise_ious = bbox_overlaps(boxes, gt_boxes, eps=1e-8)
-            _, col_ind = self.dynamic_k_matching(cost, pairwise_ious, m, valid_mask)
-            row_ind, col_ind = torch.as_tensor(torch.nonzero(valid_mask).squeeze(dim=-1)), torch.as_tensor(col_ind)
-            indices.append(torch.stack((row_ind, col_ind), dim=-1).to(cost.device))
-        # [B, K, K]
+            _, gt_ind = self.dynamic_k_matching(cost, pairwise_ious, m, valid_mask)
+            indices.append((valid_mask, gt_ind))
         return indices

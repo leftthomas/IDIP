@@ -164,17 +164,12 @@ class DiffusionInst(nn.Module):
         result = Instances(image_size)
 
         pred_logits = torch.sigmoid(pred_logits)
-        # [N, C, 2*S, 2*S]
-        pred_masks = torch.sigmoid(mask_head(features, pred_boxes))
-        n, c, t, _ = pred_masks.size()
         # [N*C]
         labels = torch.arange(self.num_classes, device=self.device).repeat(self.num_proposals)
         # select the top N predictions
         scores, indices = pred_logits.flatten().topk(self.num_proposals, sorted=False)
         classes = labels[indices]
         boxes = pred_boxes.reshape(-1, 1, 4).repeat(1, self.num_classes, 1).reshape(-1, 4)[indices]
-        # [N, 2*S, 2*S]
-        masks = pred_masks.reshape(-1, 1, t, t)[indices]
 
         # nms
         keep = batched_nms(boxes, scores, classes, 0.5)
@@ -182,7 +177,11 @@ class DiffusionInst(nn.Module):
         boxes = boxes[keep]
         scores = scores[keep]
         classes = classes[keep]
-        masks = masks[keep]
+        # [K, C, 2*S, 2*S]
+        pred_masks = torch.sigmoid(mask_head(features, boxes))
+        k, c, t, _ = pred_masks.size()
+        # [N, 1, 2*S, 2*S]
+        masks = pred_masks[torch.arange(k, device=self.device), classes, :, :].unsqueeze(dim=1)
 
         # convert to detectron2 needed format
         result.pred_boxes = Boxes(boxes)
