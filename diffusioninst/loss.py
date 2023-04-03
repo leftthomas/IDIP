@@ -15,7 +15,8 @@ class SetCriterion(nn.Module):
         self.l1_weight = cfg.MODEL.DiffusionInst.L1_WEIGHT
         self.giou_weight = cfg.MODEL.DiffusionInst.GIOU_WEIGHT
         self.mask_weight = cfg.MODEL.DiffusionInst.MASK_WEIGHT
-        self.matcher = SimOTAMatcher(self.cls_weight, self.l1_weight, self.giou_weight, self.mask_weight)
+        with_mask = cfg.MODEL.DiffusionInst.WITH_MASK
+        self.matcher = SimOTAMatcher(self.cls_weight, self.l1_weight, self.giou_weight, self.mask_weight, with_mask)
 
     def forward(self, outputs, targets, features, mask_head):
         total_cls_loss, total_l1_loss, total_giou_loss, total_mask_loss = 0, 0, 0, 0
@@ -79,12 +80,13 @@ class SetCriterion(nn.Module):
 
 
 class SimOTAMatcher(SimOTAAssigner):
-    def __init__(self, cost_cls, cost_l1, cost_giou, cost_mask):
+    def __init__(self, cost_cls, cost_l1, cost_giou, cost_mask, with_mask=False):
         super().__init__()
         self.cls_cost = FocalLossCost(cost_cls, eps=1e-8)
         self.cost_l1 = cost_l1
         self.cost_giou = cost_giou
         self.cost_mask = cost_mask
+        self.with_mask = with_mask
 
     @torch.no_grad()
     def assign(self, outputs, targets, features, mask_head):
@@ -95,9 +97,9 @@ class SimOTAMatcher(SimOTAAssigner):
         indices = []
         for i in range(b):
             # [N, C], [N, 4]
-            logits, boxes, feature = pred_logits[i], pred_boxes[i], [feat[i].unsqueeze(dim=0) for feat in features]
-            # [M], [M, 4], [M, H, W]
-            gt_classes, gt_boxes, gt_masks = targets[i]['classes'], targets[i]['boxes'], targets[i]['masks']
+            logits, boxes = pred_logits[i], pred_boxes[i]
+            # [M], [M, 4]
+            gt_classes, gt_boxes = targets[i]['classes'], targets[i]['boxes']
             image_size = targets[i]['image_size']
             m = gt_classes.size(0)
 
@@ -110,8 +112,6 @@ class SimOTAMatcher(SimOTAAssigner):
                 is_in_boxes_and_center = torch.ones(n, m, dtype=torch.bool, device=boxes.device)
 
             logits, boxes = logits[valid_mask], boxes[valid_mask]
-            # masks = torch.sigmoid(mask_head(feature, boxes))
-            # t = masks.size(-1)
 
             # [K, M]
             cls_cost = self.cls_cost(logits, gt_classes)
@@ -123,19 +123,26 @@ class SimOTAMatcher(SimOTAAssigner):
             l1_cost = self.cost_l1 * torch.cdist(norm_boxes, norm_gt_boxes, p=1)
             giou_cost = self.cost_giou * (1 - generalized_box_iou(norm_boxes, norm_gt_boxes))
 
-            # # compute the mask cost with dice loss
-            # # [M, 2*S, 2*S]
-            # gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
-            # # [K, M]
-            # masks = masks.reshape(-1, 1, c, t * t)
-            # gt_masks = gt_masks.reshape(1, m, 1, -1)
-            # intersection = (masks * gt_masks).sum(dim=-1)
-            # union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
-            # mask_cost = self.cost_mask * (1 - (2 * intersection / union))
-            # mask_cost = mask_cost[:, torch.arange(m), gt_classes].squeeze(dim=-1)
-
-            # final cost matrix
-            cost = cls_cost + l1_cost + giou_cost + (~is_in_boxes_and_center) * 100000.0
+            if self.with_mask:
+                feature = [feat[i].unsqueeze(dim=0) for feat in features]
+                # [M, H, W]
+                gt_masks = targets[i]['masks']
+                masks = torch.sigmoid(mask_head(feature, boxes))
+                t = masks.size(-1)
+                # compute the mask cost with dice loss
+                # [M, 2*S, 2*S]
+                gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
+                # [K, M]
+                masks = masks.reshape(-1, 1, c, t * t)
+                gt_masks = gt_masks.reshape(1, m, 1, -1)
+                intersection = (masks * gt_masks).sum(dim=-1)
+                union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
+                mask_cost = self.cost_mask * (1 - (2 * intersection / union))
+                mask_cost = mask_cost[:, torch.arange(m), gt_classes]
+                cost = cls_cost + l1_cost + giou_cost + mask_cost + (~is_in_boxes_and_center) * 100000.0
+            else:
+                # final cost matrix
+                cost = cls_cost + l1_cost + giou_cost + (~is_in_boxes_and_center) * 100000.0
 
             pairwise_ious = bbox_overlaps(boxes, gt_boxes, eps=1e-8)
             _, gt_ind = self.dynamic_k_matching(cost, pairwise_ious, m, valid_mask)

@@ -8,4 +8,4 @@ SOLVER:
   BASE_LR: 0.00005
   STEPS: (60000, 80000)
   MAX_ITER: 90000
-OUTPUT_DIR: 'results/norm'
+OUTPUT_DIR: 'results/basic'

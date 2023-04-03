@@ -29,6 +29,7 @@ class DiffusionInst(nn.Module):
         # build diffusion
         self.num_steps = cfg.MODEL.DiffusionInst.NUM_STEPS
         self.sampling_steps = cfg.MODEL.DiffusionInst.SAMPLING_STEPS
+        self.sampling_type = cfg.MODEL.DiffusionInst.SAMPLING_TYPE
         alphas = cosine_schedule(self.num_steps)
         self.register_buffer('alphas_cumprod', torch.cumprod(alphas, dim=0))
 
@@ -144,7 +145,11 @@ class DiffusionInst(nn.Module):
                 continue
             # according DDIM to compute x_t of next time step
             alpha, alpha_next = self.alphas_cumprod[time_now], self.alphas_cumprod[time_next]
-            sigma = (1 - alpha / alpha_next).sqrt() * ((1 - alpha_next) / (1 - alpha)).sqrt()
+            if self.sampling_type == 'DDIM':
+                sigma = 0.0
+            else:
+                # DDPM
+                sigma = (1 - alpha / alpha_next).sqrt() * ((1 - alpha_next) / (1 - alpha)).sqrt()
             c = (1 - alpha_next - sigma ** 2).sqrt()
             noise = torch.randn_like(x_t)
             x_t = (x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise).to(torch.float32)
