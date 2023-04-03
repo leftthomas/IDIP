@@ -108,7 +108,10 @@ class SimOTAMatcher(SimOTAAssigner):
             # filter out the boxes not inside the ground truth boxes
             valid_mask, is_in_boxes_and_center = self.get_in_gt_and_in_center_info(
                 box_convert(boxes, in_fmt='xyxy', out_fmt='cxcywh'), gt_boxes)
-            assert valid_mask.sum() > 0, 'No valid boxes in the image'
+            if valid_mask.sum() == 0:
+                # avoid no valid boxes
+                valid_mask = torch.ones_like(valid_mask)
+                is_in_boxes_and_center = torch.ones(n, m, dtype=torch.bool, device=boxes.device)
 
             logits, boxes = logits[valid_mask], boxes[valid_mask]
             # masks = torch.sigmoid(mask_head(feature, boxes))
