@@ -6,7 +6,7 @@ from detectron2.structures import Boxes, ImageList, Instances
 from torch import nn
 from torchvision.ops import box_convert, batched_nms
 
-from .head import cosine_schedule, normed_box_to_abs_box, TimeEncoder, DiffusionRoiHead
+from .head import cosine_schedule, normed_box_to_abs_box, DiffusionRoiHead
 from .loss import SetCriterion
 
 
@@ -31,9 +31,6 @@ class DiffusionInst(nn.Module):
         self.sampling_steps = cfg.MODEL.DiffusionInst.SAMPLING_STEPS
         alphas = cosine_schedule(self.num_steps)
         self.register_buffer('alphas_cumprod', torch.cumprod(alphas, dim=0))
-
-        # build time head
-        self.time_head = TimeEncoder(self.dim_features)
 
         # build RoI head
         strides = [1 / self.backbone.output_shape()[k].stride for k in self.in_features]
@@ -62,9 +59,7 @@ class DiffusionInst(nn.Module):
         if self.training:
             # [B], [B, N, 4], [B, 1]
             targets, boxes, ts = self.preprocess_target(batched_inputs)
-            # [B, 4*D]
-            time_emb = self.time_head(ts)
-            output = self.roi_head(features, boxes, time_emb)
+            output = self.roi_head(features, boxes, ts)
             loss_dict = self.criterion(output, targets, features, self.roi_head.mask_head)
             return loss_dict
         else:
@@ -135,8 +130,7 @@ class DiffusionInst(nn.Module):
         image_size = torch.as_tensor([w, h, w, h], device=self.device).reshape(1, 4)
         for time_now, time_next in zip(times[:-1], times[1:]):
             boxes = normed_box_to_abs_box(x_t, image_size)
-            time_emb = self.time_head(time_now.reshape(1, 1))
-            output = self.roi_head(features, boxes.unsqueeze(dim=0), time_emb)[-1]
+            output = self.roi_head(features, boxes.unsqueeze(dim=0), time_now.reshape(1, 1))[-1]
             # [1, N, C], [1, N, 4]
             pred_logits, pred_boxes = output['pred_logits'], output['pred_boxes']
             # operate in [-1, 1] space to keep same with diffusion noise

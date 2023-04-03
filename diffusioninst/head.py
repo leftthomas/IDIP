@@ -147,7 +147,8 @@ class DiffusionRoiHead(nn.Module):
         self.num_classes = num_classes
         self.extractor = ROIPooler(box_feat_size, strides, box_feat_ratio, box_feat_type)
         self.dynamic_head = nn.ModuleList([DynamicHead(dim_hidden, box_feat_size) for _ in range(num_stages)])
-        self.box_head = BoxHead(dim_hidden, num_classes)
+        self.time_head = nn.ModuleList([TimeEncoder(dim_hidden) for _ in range(num_stages)])
+        self.box_head = nn.ModuleList([BoxHead(dim_hidden, num_classes) for _ in range(num_stages)])
         self.mask_head = MaskHead(dim_hidden, num_classes, strides, mask_feat_size, mask_feat_ratio, mask_feat_type)
         self.transform = Box2BoxTransform(weights=(2.0, 2.0, 1.0, 1.0))
         self.reset_parameters()
@@ -158,7 +159,7 @@ class DiffusionRoiHead(nn.Module):
             if p.shape[-1] == self.num_classes:
                 nn.init.constant_(p, -math.log((1 - 0.01) / 0.01))
 
-    def forward(self, features, boxes, time_emb):
+    def forward(self, features, boxes, ts):
         b, n, _ = boxes.size()
         results, proposal_feat = [], None
         for stage in range(self.num_stages):
@@ -170,8 +171,11 @@ class DiffusionRoiHead(nn.Module):
             proposal_feat = torch.flatten(roi_feat, start_dim=-2).mean(-1).reshape(b, n, -1) \
                 if proposal_feat is None else proposal_feat
             proposal_feat = self.dynamic_head[stage](roi_feat, proposal_feat)
+            # [B, 4*D]
+            time_emb = self.time_head[stage](ts)
+
             # [B, N, C], [B, N, 4]
-            pred_logit, pred_delta = self.box_head(proposal_feat, time_emb)
+            pred_logit, pred_delta = self.box_head[stage](proposal_feat, time_emb)
             # [B, N, 4]
             pred_box = self.transform.apply_deltas(pred_delta.reshape(-1, 4), boxes.reshape(-1, 4)).reshape(b, n, -1)
             boxes = pred_box.detach()
