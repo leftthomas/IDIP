@@ -18,7 +18,7 @@ class SetCriterion(nn.Module):
         self.matcher = SimOTAMatcher(self.cls_weight, self.l1_weight, self.giou_weight, self.mask_weight)
 
     def forward(self, outputs, targets, features, mask_head):
-        all_cls_loss, all_l1_loss, all_giou_loss, all_mask_loss = 0, 0, 0, 0
+        total_cls_loss, total_l1_loss, total_giou_loss, total_mask_loss = 0, 0, 0, 0
         for output in outputs:
             # retrieve the matching between outputs and targets
             indices = self.matcher.assign(output, targets, features, mask_head)
@@ -26,59 +26,55 @@ class SetCriterion(nn.Module):
             pred_logits, pred_boxes = output['pred_logits'], output['pred_boxes']
             b, n, c = pred_logits.size()
 
-            num_instances, total_cls_loss, total_l1_loss, total_giou_loss, total_mask_loss = 0, 0, 0, 0, 0
+            num_ins, logits, norm_boxes, norm_gt_boxes, masks, gt_labels, gt_masks = 0, pred_logits, [], [], [], [], []
             for i in range(b):
                 valid_mask, gt_ind = indices[i][0], indices[i][1]
                 # [N, C], [K, 4]
-                logits, boxes = pred_logits[i], pred_boxes[i][valid_mask]
+                logit, box = pred_logits[i], pred_boxes[i][valid_mask]
                 feature = [feat[i].unsqueeze(dim=0) for feat in features]
                 # [K], [K, 4], [K, H, W]
-                gt_classes = targets[i]['classes'][gt_ind]
-                gt_boxes = targets[i]['boxes'][gt_ind]
-                gt_masks = BitMasks(targets[i]['masks'].tensor[gt_ind])
+                gt_class = targets[i]['classes'][gt_ind]
+                gt_box = targets[i]['boxes'][gt_ind]
+                gt_mask = BitMasks(targets[i]['masks'].tensor[gt_ind])
 
-                image_size, k = targets[i]['image_size'], gt_classes.size(0)
-                num_instances += k
+                label = torch.zeros_like(logit)
+                label[valid_mask] = F.one_hot(gt_class, c).float()
+                image_size, k = targets[i]['image_size'], gt_class.size(0)
+                num_ins += k
 
-                # compute the classification loss with focal loss
-                labels = torch.zeros_like(logits)
-                labels[valid_mask] = F.one_hot(gt_classes, c).float()
-                cls_loss = sigmoid_focal_loss(logits, labels, reduction='sum')
-                total_cls_loss = total_cls_loss + cls_loss
-
-                # compute the box loss with L1 loss and GIoU loss in normalized coordinates
-                norm_boxes = boxes / image_size
-                norm_gt_boxes = gt_boxes / image_size
-                l1_loss = F.l1_loss(norm_boxes, norm_gt_boxes, reduction='sum')
-                total_l1_loss = total_l1_loss + l1_loss
-                giou_loss = torch.diag(1 - generalized_box_iou(norm_boxes, norm_gt_boxes)).sum()
-                total_giou_loss = total_giou_loss + giou_loss
-
-                # compute the mask loss with dice loss
-                masks = torch.sigmoid(mask_head(feature, boxes))
-                t = masks.size(-1)
+                mask = torch.sigmoid(mask_head(feature, box))
+                mask = mask[torch.arange(k), gt_class, :, :]
+                t = mask.size(-1)
                 # [K, 2*S, 2*S]
-                gt_masks = gt_masks.crop_and_resize(gt_boxes, t).float()
-                masks = masks[torch.arange(k), gt_classes, :, :].reshape(k, -1)
-                gt_masks = gt_masks.reshape(k, -1)
-                intersection = (masks * gt_masks).sum(dim=-1)
-                union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
-                mask_loss = (1 - (2 * intersection / union)).sum()
-                total_mask_loss = total_mask_loss + mask_loss
+                gt_mask = gt_mask.crop_and_resize(gt_box, t).float()
 
-            total_cls_loss = total_cls_loss / num_instances
-            total_l1_loss = total_l1_loss / num_instances
-            total_giou_loss = total_giou_loss / num_instances
-            total_mask_loss = total_mask_loss / num_instances
-            all_cls_loss = all_cls_loss + total_cls_loss
-            all_l1_loss = all_l1_loss + total_l1_loss
-            all_giou_loss = all_giou_loss + total_giou_loss
-            all_mask_loss = all_mask_loss + total_mask_loss
+                norm_boxes.append(box / image_size)
+                norm_gt_boxes.append(gt_box / image_size)
+                gt_labels.append(label)
+                masks.append(mask)
+                gt_masks.append(gt_mask)
 
-        losses = {'cls_loss': self.cls_weight * all_cls_loss / len(outputs),
-                  'l1_loss': self.l1_weight * all_l1_loss / len(outputs),
-                  'giou_loss': self.giou_weight * all_giou_loss / len(outputs),
-                  'mask_loss': self.mask_weight * all_mask_loss / len(outputs)}
+            # compute the classification loss with focal loss
+            cls_loss = sigmoid_focal_loss(logits, torch.stack(gt_labels), reduction='sum')
+            # compute the box loss with L1 loss and GIoU loss in normalized coordinates
+            l1_loss = F.l1_loss(torch.cat(norm_boxes), torch.cat(norm_gt_boxes), reduction='sum')
+            giou_loss = torch.diag(1 - generalized_box_iou(torch.cat(norm_boxes), torch.cat(norm_gt_boxes))).sum()
+            # compute the mask loss with dice loss
+            masks = torch.cat(masks).reshape(num_ins, -1)
+            gt_masks = torch.cat(gt_masks).reshape(num_ins, -1)
+            intersection = (masks * gt_masks).sum(dim=-1)
+            union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
+            mask_loss = (1 - (2 * intersection / union)).sum()
+
+            total_cls_loss = total_cls_loss + cls_loss / num_ins
+            total_l1_loss = total_l1_loss + l1_loss / num_ins
+            total_giou_loss = total_giou_loss + giou_loss / num_ins
+            total_mask_loss = total_mask_loss + mask_loss / num_ins
+
+        losses = {'cls_loss': self.cls_weight * total_cls_loss / len(outputs),
+                  'l1_loss': self.l1_weight * total_l1_loss / len(outputs),
+                  'giou_loss': self.giou_weight * total_giou_loss / len(outputs),
+                  'mask_loss': self.mask_weight * total_mask_loss / len(outputs)}
         return losses
 
 
