@@ -185,7 +185,7 @@ class DiffusionInst(nn.Module):
         # [K, C, 2*S, 2*S]
         pred_masks = torch.sigmoid(mask_head(features, boxes, proposal_feat))
         k, c, t, _ = pred_masks.size()
-        # [N, 1, 2*S, 2*S]
+        # [K, 1, 2*S, 2*S]
         masks = pred_masks[torch.arange(k, device=self.device), classes, :, :].unsqueeze(dim=1)
 
         # convert to detectron2 needed format
