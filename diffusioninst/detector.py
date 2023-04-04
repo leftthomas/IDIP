@@ -172,10 +172,8 @@ class DiffusionInst(nn.Module):
         scores, indices = pred_logits.flatten().topk(self.num_proposals, sorted=False)
         classes = labels[indices]
         boxes = pred_boxes.reshape(-1, 1, 4).repeat(1, self.num_classes, 1).reshape(-1, 4)[indices]
-        proposal_feat = \
-            proposal_feat.reshape(-1, 1, self.dim_features).repeat(1, self.num_classes, 1).reshape(-1,
-                                                                                                   self.dim_features)[
-                indices]
+        d = self.dim_features
+        proposal_feat = proposal_feat.reshape(-1, 1, d).repeat(1, self.num_classes, 1).reshape(-1, d)[indices]
 
         # nms
         keep = batched_nms(boxes, scores, classes, 0.5)

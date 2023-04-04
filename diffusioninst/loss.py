@@ -98,8 +98,8 @@ class SimOTAMatcher(SimOTAAssigner):
 
         indices = []
         for i in range(b):
-            # [N, C], [N, 4], [N, D]
-            logits, boxes, proposal_feat = pred_logits[i], pred_boxes[i], proposal_feats[i]
+            # [N, C], [N, 4]
+            logits, boxes = pred_logits[i], pred_boxes[i]
             # [M], [M, 4]
             gt_classes, gt_boxes = targets[i]['classes'], targets[i]['boxes']
             image_size = targets[i]['image_size']
@@ -127,9 +127,10 @@ class SimOTAMatcher(SimOTAAssigner):
 
             if self.with_mask:
                 feature = [feat[i].unsqueeze(dim=0) for feat in features]
+                # [K, D]
+                proposal_feat = proposal_feats[i][valid_mask]
                 # [M, H, W]
                 gt_masks = targets[i]['masks']
-                proposal_feat = proposal_feat[valid_mask]
                 masks = torch.sigmoid(mask_head(feature, boxes, proposal_feat))
                 t = masks.size(-1)
                 # compute the mask cost with dice loss
