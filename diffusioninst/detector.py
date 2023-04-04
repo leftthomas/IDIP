@@ -41,8 +41,9 @@ class DiffusionInst(nn.Module):
         mask_feat_size = cfg.MODEL.ROI_MASK_HEAD.POOLER_RESOLUTION
         mask_feat_ratio = cfg.MODEL.ROI_MASK_HEAD.POOLER_SAMPLING_RATIO
         mask_feat_type = cfg.MODEL.ROI_MASK_HEAD.POOLER_TYPE
+        with_dynamic = cfg.MODEL.DiffusionInst.WITH_DYNAMIC
         self.roi_head = DiffusionRoiHead(self.dim_features, strides, self.num_classes, box_feat_size, box_feat_ratio,
-                                         box_feat_type, mask_feat_size, mask_feat_ratio, mask_feat_type)
+                                         box_feat_type, mask_feat_size, mask_feat_ratio, mask_feat_type, with_dynamic)
 
         # build loss criterion
         self.criterion = SetCriterion(cfg)
@@ -64,9 +65,10 @@ class DiffusionInst(nn.Module):
             loss_dict = self.criterion(output, targets, features, self.roi_head.mask_head)
             return loss_dict
         else:
-            # [N, C], [N, 4]
-            pred_logits, pred_boxes = self.ddim_sample(batched_inputs, features)
-            results = self.inference(pred_logits, pred_boxes, batched_inputs, features, self.roi_head.mask_head)
+            # [N, C], [N, 4], [N, D]
+            pred_logits, pred_boxes, proposal_feat = self.ddim_sample(batched_inputs, features)
+            results = self.inference(pred_logits, pred_boxes, proposal_feat, batched_inputs, features,
+                                     self.roi_head.mask_head)
             return results
 
     def preprocess_image(self, batched_inputs):
@@ -132,8 +134,9 @@ class DiffusionInst(nn.Module):
         for time_now, time_next in zip(times[:-1], times[1:]):
             boxes = normed_box_to_abs_box(x_t, image_size)
             output = self.roi_head(features, boxes.unsqueeze(dim=0), time_now.reshape(1, 1))[-1]
-            # [1, N, C], [1, N, 4]
-            pred_logits, pred_boxes = output['pred_logits'], output['pred_boxes']
+            # [1, N, C], [1, N, 4], [1, N, D]
+            pred_logits, pred_boxes, proposal_feat = output['pred_logits'], output['pred_boxes'], output[
+                'proposal_feat']
             # operate in [-1, 1] space to keep same with diffusion noise
             x_start = box_convert(pred_boxes.squeeze(dim=0) / image_size, in_fmt='xyxy', out_fmt='cxcywh')
             x_start = torch.clamp(x_start, min=0, max=1) * 2 - 1
@@ -154,10 +157,10 @@ class DiffusionInst(nn.Module):
             noise = torch.randn_like(x_t)
             x_t = (x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise).to(torch.float32)
 
-        return pred_logits.squeeze(0), pred_boxes.squeeze(0)
+        return pred_logits.squeeze(0), pred_boxes.squeeze(0), proposal_feat.squeeze(0)
 
     @torch.no_grad()
-    def inference(self, pred_logits, pred_boxes, batched_inputs, features, mask_head):
+    def inference(self, pred_logits, pred_boxes, proposal_feat, batched_inputs, features, mask_head):
         assert len(batched_inputs) == 1
         image_size = batched_inputs[0]['image'].size()[1:]
         result = Instances(image_size)
@@ -169,6 +172,10 @@ class DiffusionInst(nn.Module):
         scores, indices = pred_logits.flatten().topk(self.num_proposals, sorted=False)
         classes = labels[indices]
         boxes = pred_boxes.reshape(-1, 1, 4).repeat(1, self.num_classes, 1).reshape(-1, 4)[indices]
+        proposal_feat = \
+            proposal_feat.reshape(-1, 1, self.dim_features).repeat(1, self.num_classes, 1).reshape(-1,
+                                                                                                   self.dim_features)[
+                indices]
 
         # nms
         keep = batched_nms(boxes, scores, classes, 0.5)
@@ -176,8 +183,9 @@ class DiffusionInst(nn.Module):
         boxes = boxes[keep]
         scores = scores[keep]
         classes = classes[keep]
+        proposal_feat = proposal_feat[keep]
         # [K, C, 2*S, 2*S]
-        pred_masks = torch.sigmoid(mask_head(features, boxes))
+        pred_masks = torch.sigmoid(mask_head(features, boxes, proposal_feat))
         k, c, t, _ = pred_masks.size()
         # [N, 1, 2*S, 2*S]
         masks = pred_masks[torch.arange(k, device=self.device), classes, :, :].unsqueeze(dim=1)

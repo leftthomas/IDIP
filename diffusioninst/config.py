@@ -10,6 +10,7 @@ def add_diffusioninst_config(cfg):
     cfg.MODEL.DiffusionInst.NUM_STEPS = 1000
     cfg.MODEL.DiffusionInst.SAMPLING_TYPE = 'DDIM'
     cfg.MODEL.DiffusionInst.SAMPLING_STEPS = 1
+    cfg.MODEL.DiffusionInst.WITH_DYNAMIC = True
 
     # loss
     cfg.MODEL.DiffusionInst.CLS_WEIGHT = 2.0

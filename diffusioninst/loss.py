@@ -23,15 +23,16 @@ class SetCriterion(nn.Module):
         for output in outputs:
             # retrieve the matching between outputs and targets
             indices = self.matcher.assign(output, targets, features, mask_head)
-            # [B, N, C], [B, N, 4]
-            pred_logits, pred_boxes = output['pred_logits'], output['pred_boxes']
+            # [B, N, C], [B, N, 4], [B, N, D]
+            pred_logits, pred_boxes, proposal_feats = output['pred_logits'], output['pred_boxes'], output[
+                'proposal_feat']
             b, n, c = pred_logits.size()
 
             num_ins, logits, norm_boxes, norm_gt_boxes, masks, gt_labels, gt_masks = 0, pred_logits, [], [], [], [], []
             for i in range(b):
                 valid_mask, gt_ind = indices[i][0], indices[i][1]
-                # [N, C], [K, 4]
-                logit, box = pred_logits[i], pred_boxes[i][valid_mask]
+                # [N, C], [K, 4], [K, D]
+                logit, box, proposal_feat = pred_logits[i], pred_boxes[i][valid_mask], proposal_feats[i][valid_mask]
                 feature = [feat[i].unsqueeze(dim=0) for feat in features]
                 # [K], [K, 4], [K, H, W]
                 gt_class = targets[i]['classes'][gt_ind]
@@ -43,7 +44,7 @@ class SetCriterion(nn.Module):
                 image_size, k = targets[i]['image_size'], gt_class.size(0)
                 num_ins += k
 
-                mask = torch.sigmoid(mask_head(feature, box))
+                mask = torch.sigmoid(mask_head(feature, box, proposal_feat))
                 mask = mask[torch.arange(k), gt_class, :, :]
                 t = mask.size(-1)
                 # [K, 2*S, 2*S]
@@ -90,14 +91,15 @@ class SimOTAMatcher(SimOTAAssigner):
 
     @torch.no_grad()
     def assign(self, outputs, targets, features, mask_head):
-        # [B, N, C], [B, N, 4]
-        pred_logits, pred_boxes = outputs['pred_logits'], outputs['pred_boxes']
+        # [B, N, C], [B, N, 4], [B, N, D]
+        pred_logits, pred_boxes, proposal_feats = outputs['pred_logits'], outputs['pred_boxes'], outputs[
+            'proposal_feat']
         b, n, c = pred_logits.size()
 
         indices = []
         for i in range(b):
-            # [N, C], [N, 4]
-            logits, boxes = pred_logits[i], pred_boxes[i]
+            # [N, C], [N, 4], [N, D]
+            logits, boxes, proposal_feat = pred_logits[i], pred_boxes[i], proposal_feats[i]
             # [M], [M, 4]
             gt_classes, gt_boxes = targets[i]['classes'], targets[i]['boxes']
             image_size = targets[i]['image_size']
@@ -127,7 +129,8 @@ class SimOTAMatcher(SimOTAAssigner):
                 feature = [feat[i].unsqueeze(dim=0) for feat in features]
                 # [M, H, W]
                 gt_masks = targets[i]['masks']
-                masks = torch.sigmoid(mask_head(feature, boxes))
+                proposal_feat = proposal_feat[valid_mask]
+                masks = torch.sigmoid(mask_head(feature, boxes, proposal_feat))
                 t = masks.size(-1)
                 # compute the mask cost with dice loss
                 # [M, 2*S, 2*S]

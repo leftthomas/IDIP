@@ -88,6 +88,7 @@ class DynamicHead(nn.Module):
         return obj_feat
 
 
+# ref DiffusionDet: Diffusion Model for Object Detection
 class BoxHead(nn.Module):
     def __init__(self, dim_hidden, num_classes, num_reg_fcs=3):
         super().__init__()
@@ -119,19 +120,23 @@ class BoxHead(nn.Module):
 
 # ref Instances as Queries
 class MaskHead(nn.Module):
-    def __init__(self, dim_hidden, num_classes, strides, mask_feat_size, mask_feat_ratio, mask_feat_type, num_convs=4):
+    def __init__(self, dim_hidden, num_classes, strides, feat_size, feat_ratio, feat_type, with_dynamic, num_convs=4):
         super().__init__()
-        self.extractor = ROIPooler(mask_feat_size, strides, mask_feat_ratio, mask_feat_type)
+        self.extractor = ROIPooler(feat_size, strides, feat_ratio, feat_type)
+        if with_dynamic:
+            self.instance_conv = DynamicConv(dim_hidden, input_feat_shape=feat_size, with_proj=False)
         self.convs = nn.Sequential(*[
             nn.Sequential(nn.Conv2d(dim_hidden, dim_hidden, 3, padding=1), nn.BatchNorm2d(dim_hidden),
                           nn.ReLU(inplace=True)) for _ in range(num_convs)])
         self.upsample = nn.ConvTranspose2d(dim_hidden, dim_hidden, kernel_size=2, stride=2)
-        self.logits = nn.Conv2d(dim_hidden, num_classes, 1)
+        self.logits = nn.Conv2d(dim_hidden, num_classes, kernel_size=1)
         self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, features, boxes):
+    def forward(self, features, boxes, obj_feat):
         # [N, D, S, S]
         roi_feat = self.extractor(features, [Boxes(boxes)])
+        if hasattr(self, 'instance_conv'):
+            roi_feat = self.instance_conv(obj_feat, roi_feat).permute(0, 2, 1).reshape(roi_feat.size())
         # [N, D, 2*S, 2*S]
         x = self.relu(self.upsample(self.convs(roi_feat)))
         # [N, C, 2*S, 2*S]
@@ -141,7 +146,7 @@ class MaskHead(nn.Module):
 
 class DiffusionRoiHead(nn.Module):
     def __init__(self, dim_hidden, strides, num_classes, box_feat_size, box_feat_ratio, box_feat_type, mask_feat_size,
-                 mask_feat_ratio, mask_feat_type, num_stages=6):
+                 mask_feat_ratio, mask_feat_type, with_dynamic, num_stages=6):
         super().__init__()
         self.num_stages = num_stages
         self.num_classes = num_classes
@@ -149,7 +154,8 @@ class DiffusionRoiHead(nn.Module):
         self.dynamic_heads = nn.ModuleList([DynamicHead(dim_hidden, box_feat_size) for _ in range(num_stages)])
         self.time_heads = nn.ModuleList([TimeEncoder(dim_hidden) for _ in range(num_stages)])
         self.box_head = BoxHead(dim_hidden, num_classes)
-        self.mask_head = MaskHead(dim_hidden, num_classes, strides, mask_feat_size, mask_feat_ratio, mask_feat_type)
+        self.mask_head = MaskHead(dim_hidden, num_classes, strides, mask_feat_size, mask_feat_ratio, mask_feat_type,
+                                  with_dynamic)
         self.transform = Box2BoxTransform(weights=(2.0, 2.0, 1.0, 1.0))
         self.reset_parameters()
 
@@ -179,5 +185,5 @@ class DiffusionRoiHead(nn.Module):
             # [B, N, 4]
             pred_box = self.transform.apply_deltas(pred_delta.reshape(-1, 4), boxes.reshape(-1, 4)).reshape(b, n, -1)
             boxes = pred_box.detach()
-            results.append({'pred_logits': pred_logit, 'pred_boxes': pred_box})
+            results.append({'pred_logits': pred_logit, 'pred_boxes': pred_box, 'proposal_feat': proposal_feat})
         return results
