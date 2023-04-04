@@ -177,7 +177,7 @@ class DiffusionInst(nn.Module):
 
         # nms
         keep = batched_nms(boxes, scores, classes, 0.5)
-        # [K, 4], [K], [K], [K, 1, 2*S, 2*S]
+        # [K, 4], [K], [K], [K, D]
         boxes = boxes[keep]
         scores = scores[keep]
         classes = classes[keep]
