@@ -3,4 +3,4 @@ MODEL:
   WEIGHTS: 'detectron2://ImageNetPretrained/torchvision/R-50.pkl'
   RESNETS:
     DEPTH: 50
-OUTPUT_DIR: 'results/size'
+OUTPUT_DIR: 'results/proposal'
