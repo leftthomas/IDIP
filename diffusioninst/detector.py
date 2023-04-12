@@ -67,8 +67,7 @@ class DiffusionInst(nn.Module):
         else:
             # [N, C], [N, 4], [N, D]
             pred_logits, pred_boxes, proposal_feat = self.ddim_sample(batched_inputs, features)
-            results = self.inference(pred_logits, pred_boxes, proposal_feat, batched_inputs, features,
-                                     self.roi_head.mask_head)
+            results = self.inference(pred_logits, pred_boxes, proposal_feat, batched_inputs, features)
             return results
 
     def preprocess_image(self, batched_inputs):
@@ -160,7 +159,7 @@ class DiffusionInst(nn.Module):
         return pred_logits.squeeze(0), pred_boxes.squeeze(0), proposal_feat.squeeze(0)
 
     @torch.no_grad()
-    def inference(self, pred_logits, pred_boxes, proposal_feat, batched_inputs, features, mask_head):
+    def inference(self, pred_logits, pred_boxes, proposal_feat, batched_inputs, features):
         assert len(batched_inputs) == 1
         image_size = batched_inputs[0]['image'].size()[1:]
         result = Instances(image_size)
@@ -183,7 +182,7 @@ class DiffusionInst(nn.Module):
         classes = classes[keep]
         proposal_feat = proposal_feat[keep]
         # [K, C, 2*S, 2*S]
-        pred_masks = torch.sigmoid(mask_head(features, boxes, proposal_feat))
+        pred_masks = torch.sigmoid(self.roi_head.mask_head(features, boxes, proposal_feat))
         k, c, t, _ = pred_masks.size()
         # [K, 1, 2*S, 2*S]
         masks = pred_masks[torch.arange(k, device=self.device), classes, :, :].unsqueeze(dim=1)
