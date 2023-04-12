@@ -21,7 +21,7 @@ class SetCriterion(nn.Module):
         total_cls_loss, total_l1_loss, total_giou_loss, total_mask_loss = 0, 0, 0, 0
         for output in outputs:
             # retrieve the matching between outputs and targets
-            indices = self.matcher.assign(output, targets, features)
+            indices = self.matcher.assign(output, targets)
             # [B, N, C], [B, N, 4], [B, N, D]
             pred_logits, pred_boxes, proposal_feats = output['pred_logits'], output['pred_boxes'], output[
                 'proposal_feat']
@@ -87,7 +87,7 @@ class SimOTAMatcher(SimOTAAssigner):
         self.cost_giou = cost_giou
 
     @torch.no_grad()
-    def assign(self, outputs, targets, features):
+    def assign(self, outputs, targets):
         # [B, N, C], [B, N, 4]
         pred_logits, pred_boxes = outputs['pred_logits'], outputs['pred_boxes']
         b, n, c = pred_logits.size()
