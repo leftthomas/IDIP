@@ -3,7 +3,7 @@ import torch
 from detectron2.modeling.box_regression import Box2BoxTransform
 from detectron2.modeling.poolers import ROIPooler
 from detectron2.structures import Boxes
-from mmdet.models.utils import DynamicConv
+from mmdet.models.layers.transformer import DynamicConv
 from torch import nn
 from torchvision.ops import box_convert, clip_boxes_to_image
 

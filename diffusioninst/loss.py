@@ -1,9 +1,8 @@
 import torch
 import torch.nn.functional as F
 from detectron2.structures import BitMasks
-from mmdet.core.bbox.assigners import SimOTAAssigner
-from mmdet.core.bbox.iou_calculators import bbox_overlaps
-from mmdet.core.bbox.match_costs import FocalLossCost
+from mmdet.models.task_modules.assigners import SimOTAAssigner
+from mmdet.structures.bbox import bbox_overlaps
 from torch import nn
 from torchvision.ops import generalized_box_iou, sigmoid_focal_loss, box_convert
 
@@ -27,9 +26,12 @@ class SetCriterion(nn.Module):
                 'proposal_feat']
             b, n, c = pred_logits.size()
 
-            num_ins, logits, norm_boxes, norm_gt_boxes, masks, gt_labels, gt_masks = 0, pred_logits, [], [], [], [], []
+            num_ins, logits, norm_boxes, norm_gt_boxes, masks, gt_labels, gt_masks = 0, [], [], [], [], [], []
             for i in range(b):
                 valid_mask, gt_ind = indices[i][0], indices[i][1]
+                if len(gt_ind) == 0:
+                    # pass the image with empty ground truth
+                    continue
                 # [N, C], [K, 4], [K, D]
                 logit, box, proposal_feat = pred_logits[i], pred_boxes[i][valid_mask], proposal_feats[i][valid_mask]
                 feature = [feat[i].unsqueeze(dim=0) for feat in features]
@@ -44,33 +46,35 @@ class SetCriterion(nn.Module):
                 num_ins += k
 
                 mask = torch.sigmoid(mask_head(feature, box, proposal_feat))
-                mask = mask[torch.arange(k), gt_class, :, :]
+                mask = mask[torch.arange(k, device=mask.device), gt_class, :, :]
                 t = mask.size(-1)
                 # [K, 2*S, 2*S]
                 gt_mask = gt_mask.crop_and_resize(box, t).float()
 
+                logits.append(logit)
                 norm_boxes.append(box / image_size)
                 norm_gt_boxes.append(gt_box / image_size)
                 gt_labels.append(label)
                 masks.append(mask)
                 gt_masks.append(gt_mask)
 
-            # compute the classification loss with focal loss
-            cls_loss = sigmoid_focal_loss(logits, torch.stack(gt_labels), reduction='sum')
-            # compute the box loss with L1 loss and GIoU loss in normalized coordinates
-            l1_loss = F.l1_loss(torch.cat(norm_boxes), torch.cat(norm_gt_boxes), reduction='sum')
-            giou_loss = torch.diag(1 - generalized_box_iou(torch.cat(norm_boxes), torch.cat(norm_gt_boxes))).sum()
-            # compute the mask loss with dice loss
-            masks = torch.cat(masks).reshape(num_ins, -1)
-            gt_masks = torch.cat(gt_masks).reshape(num_ins, -1)
-            intersection = (masks * gt_masks).sum(dim=-1)
-            union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
-            mask_loss = (1 - (2 * intersection / union)).sum()
+            if num_ins > 0:
+                # compute the classification loss with focal loss
+                cls_loss = sigmoid_focal_loss(torch.cat(logits), torch.cat(gt_labels), reduction='sum')
+                # compute the box loss with L1 loss and GIoU loss in normalized coordinates
+                l1_loss = F.l1_loss(torch.cat(norm_boxes), torch.cat(norm_gt_boxes), reduction='sum')
+                giou_loss = torch.diag(1 - generalized_box_iou(torch.cat(norm_boxes), torch.cat(norm_gt_boxes))).sum()
+                # compute the mask loss with dice loss
+                masks = torch.cat(masks).reshape(num_ins, -1)
+                gt_masks = torch.cat(gt_masks).reshape(num_ins, -1)
+                intersection = (masks * gt_masks).sum(dim=-1)
+                union = masks.sum(dim=-1) + gt_masks.sum(dim=-1) + 1e-8
+                mask_loss = (1 - (2 * intersection / union)).sum()
 
-            total_cls_loss = total_cls_loss + cls_loss / num_ins
-            total_l1_loss = total_l1_loss + l1_loss / num_ins
-            total_giou_loss = total_giou_loss + giou_loss / num_ins
-            total_mask_loss = total_mask_loss + mask_loss / num_ins
+                total_cls_loss = total_cls_loss + cls_loss / num_ins
+                total_l1_loss = total_l1_loss + l1_loss / num_ins
+                total_giou_loss = total_giou_loss + giou_loss / num_ins
+                total_mask_loss = total_mask_loss + mask_loss / num_ins
 
         losses = {'cls_loss': self.cls_weight * total_cls_loss / len(outputs),
                   'l1_loss': self.l1_weight * total_l1_loss / len(outputs),
@@ -80,11 +84,13 @@ class SetCriterion(nn.Module):
 
 
 class SimOTAMatcher(SimOTAAssigner):
-    def __init__(self, cost_cls, cost_l1, cost_giou):
+    def __init__(self, cost_cls, cost_l1, cost_giou, alpha=0.25, gamma=2):
         super().__init__()
-        self.cls_cost = FocalLossCost(cost_cls, eps=1e-8)
+        self.cost_cls = cost_cls
         self.cost_l1 = cost_l1
         self.cost_giou = cost_giou
+        self.alpha = alpha
+        self.gamma = gamma
 
     @torch.no_grad()
     def assign(self, outputs, targets):
@@ -100,6 +106,10 @@ class SimOTAMatcher(SimOTAAssigner):
             gt_classes, gt_boxes = targets[i]['classes'], targets[i]['boxes']
             image_size = targets[i]['image_size']
             m = gt_classes.size(0)
+            if m == 0:
+                # empty ground truth
+                indices.append((torch.zeros(n, device=logits.device).bool(), torch.arange(0, device=logits.device)))
+                continue
 
             # filter out the boxes not inside the ground truth boxes
             valid_mask, is_in_boxes_and_center = self.get_in_gt_and_in_center_info(
@@ -112,7 +122,10 @@ class SimOTAMatcher(SimOTAAssigner):
             logits, boxes = logits[valid_mask], boxes[valid_mask]
 
             # [K, M]
-            cls_cost = self.cls_cost(logits, gt_classes)
+            cls_pred = logits.sigmoid()
+            neg_cost = -(1 - cls_pred + 1e-8).log() * (1 - self.alpha) * cls_pred.pow(self.gamma)
+            pos_cost = -(cls_pred + 1e-8).log() * self.alpha * (1 - cls_pred).pow(self.gamma)
+            cls_cost = self.cost_cls * (pos_cost[:, gt_classes] - neg_cost[:, gt_classes])
 
             # compute the box cost with L1 loss and GIoU loss in normalized coordinates
             norm_boxes = boxes / image_size
