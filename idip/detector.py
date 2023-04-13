@@ -11,13 +11,13 @@ from .loss import SetCriterion
 
 
 @META_ARCH_REGISTRY.register()
-class DiffusionInst(nn.Module):
+class IDIP(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.device = torch.device(cfg.MODEL.DEVICE)
         self.in_features = cfg.MODEL.ROI_HEADS.IN_FEATURES
-        self.num_classes = cfg.MODEL.DiffusionInst.NUM_CLASSES
-        self.num_proposals = cfg.MODEL.DiffusionInst.NUM_PROPOSALS
+        self.num_classes = cfg.MODEL.IDIP.NUM_CLASSES
+        self.num_proposals = cfg.MODEL.IDIP.NUM_PROPOSALS
 
         # build backbone
         self.backbone = build_backbone(cfg)
@@ -27,9 +27,9 @@ class DiffusionInst(nn.Module):
         self.dim_features = dim_features[0]
 
         # build diffusion
-        self.num_steps = cfg.MODEL.DiffusionInst.NUM_STEPS
-        self.sampling_steps = cfg.MODEL.DiffusionInst.SAMPLING_STEPS
-        self.sampling_type = cfg.MODEL.DiffusionInst.SAMPLING_TYPE
+        self.num_steps = cfg.MODEL.IDIP.NUM_STEPS
+        self.sampling_steps = cfg.MODEL.IDIP.SAMPLING_STEPS
+        self.sampling_type = cfg.MODEL.IDIP.SAMPLING_TYPE
         alphas = cosine_schedule(self.num_steps)
         self.register_buffer('alphas_cumprod', torch.cumprod(alphas, dim=0))
 
@@ -41,7 +41,7 @@ class DiffusionInst(nn.Module):
         mask_feat_size = cfg.MODEL.ROI_MASK_HEAD.POOLER_RESOLUTION
         mask_feat_ratio = cfg.MODEL.ROI_MASK_HEAD.POOLER_SAMPLING_RATIO
         mask_feat_type = cfg.MODEL.ROI_MASK_HEAD.POOLER_TYPE
-        with_dynamic = cfg.MODEL.DiffusionInst.WITH_DYNAMIC
+        with_dynamic = cfg.MODEL.IDIP.WITH_DYNAMIC
         self.roi_head = DiffusionRoiHead(self.dim_features, strides, self.num_classes, box_feat_size, box_feat_ratio,
                                          box_feat_type, mask_feat_size, mask_feat_ratio, mask_feat_type, with_dynamic)
 

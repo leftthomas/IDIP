@@ -14,7 +14,7 @@ from detectron2.evaluation import COCOEvaluator, verify_results
 from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.utils.logger import setup_logger
 
-from diffusioninst import add_diffusioninst_config
+from idip import add_idip_config
 
 
 class Trainer(DefaultTrainer):
@@ -99,7 +99,7 @@ class Trainer(DefaultTrainer):
 
 def setup(arg):
     cfg = get_cfg()
-    add_diffusioninst_config(cfg)
+    add_idip_config(cfg)
     cfg.merge_from_file(arg.config_file)
     cfg.merge_from_list(arg.opts)
     cfg.freeze()

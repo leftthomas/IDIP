@@ -10,10 +10,10 @@ from torchvision.ops import generalized_box_iou, sigmoid_focal_loss, box_convert
 class SetCriterion(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.cls_weight = cfg.MODEL.DiffusionInst.CLS_WEIGHT
-        self.l1_weight = cfg.MODEL.DiffusionInst.L1_WEIGHT
-        self.giou_weight = cfg.MODEL.DiffusionInst.GIOU_WEIGHT
-        self.mask_weight = cfg.MODEL.DiffusionInst.MASK_WEIGHT
+        self.cls_weight = cfg.MODEL.IDIP.CLS_WEIGHT
+        self.l1_weight = cfg.MODEL.IDIP.L1_WEIGHT
+        self.giou_weight = cfg.MODEL.IDIP.GIOU_WEIGHT
+        self.mask_weight = cfg.MODEL.IDIP.MASK_WEIGHT
         self.matcher = SimOTAMatcher(self.cls_weight, self.l1_weight, self.giou_weight)
 
     def forward(self, outputs, targets, features, mask_head):
