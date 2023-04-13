@@ -128,7 +128,7 @@ class MaskHead(nn.Module):
         self.convs = nn.Sequential(*[
             nn.Sequential(nn.Conv2d(dim_hidden, dim_hidden, 3, padding=1), nn.BatchNorm2d(dim_hidden),
                           nn.ReLU(inplace=True)) for _ in range(num_convs)])
-        self.upsample = nn.ConvTranspose2d(dim_hidden, dim_hidden, kernel_size=2, stride=2)
+        self.upsample = nn.ConvTranspose2d(dim_hidden, dim_hidden, kernel_size=2, stride=2, bias=False)
         self.logits = nn.Conv2d(dim_hidden, num_classes, kernel_size=1)
         self.relu = nn.ReLU(inplace=True)
 
