@@ -57,7 +57,7 @@ python main.py --config-file configs/res50.yaml MODEL.WEIGHTS results/model.pth 
 To visualize the results of a given image by using the pre-trained model:
 
 ```
-python demo.py --config-file configs/res50.yaml --input image.jpg --opts MODEL.WEIGHTS results/model.pth
+python demo.py --config-file configs/res50.yaml --input image.jpg --output out.jpg --opts MODEL.WEIGHTS results/model.pth
 ```
 
 ## Benchmarks
