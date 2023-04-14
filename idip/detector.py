@@ -145,6 +145,13 @@ class IDIP(nn.Module):
             if time_next < 0:
                 x_t = x_start
                 continue
+
+            # box renewal
+            keep_idx = (torch.amax(torch.sigmoid(pred_logits), dim=-1) > 0.5).squeeze(0)
+            pred_noise = pred_noise[keep_idx]
+            x_start = x_start[keep_idx]
+            x_t = x_t[keep_idx]
+
             # according DDIM to compute x_t of next time step
             alpha, alpha_next = self.alphas_cumprod[time_now], self.alphas_cumprod[time_next]
             if self.sampling_type == 'DDIM':
@@ -155,6 +162,8 @@ class IDIP(nn.Module):
             c = (1 - alpha_next - sigma ** 2).sqrt()
             noise = torch.randn_like(x_t)
             x_t = (x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise).to(torch.float32)
+            # box renewal
+            x_t = torch.cat((x_t, torch.randn(self.num_proposals - len(x_t), 4, device=x_t.device)), dim=0)
 
         return pred_logits.squeeze(0), pred_boxes.squeeze(0), proposal_feat.squeeze(0)
 

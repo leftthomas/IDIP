@@ -51,7 +51,7 @@ tensorboard --logdir=results --bind_all
 To evaluate the model with `resnet50` backbone on COCO dataset:
 
 ```
-python main.py --config-file configs/res50.yaml MODEL.WEIGHTS results/model.pth --eval-only 
+python main.py --config-file configs/res50.yaml --eval-only MODEL.WEIGHTS results/model.pth
 ```
 
 To visualize the results of a given image by using the pre-trained model:
