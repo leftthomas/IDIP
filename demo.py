@@ -16,9 +16,8 @@ from idip import add_idip_config
 
 
 class VisualizationDemo(object):
-    def __init__(self, cfg, instance_mode=ColorMode.IMAGE):
+    def __init__(self, cfg):
         self.metadata = MetadataCatalog.get(cfg.DATASETS.TEST[0] if len(cfg.DATASETS.TEST) else '__unused')
-        self.instance_mode = instance_mode
         self.predictor = DefaultPredictor(cfg)
         self.threshold = cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST
 
@@ -28,7 +27,7 @@ class VisualizationDemo(object):
         instances = instances[instances.scores > self.threshold].to('cpu')
         # convert image from OpenCV BGR format to Matplotlib RGB format
         image = image[:, :, ::-1]
-        visualizer = Visualizer(image, self.metadata, instance_mode=self.instance_mode)
+        visualizer = Visualizer(image, self.metadata, instance_mode=ColorMode.IMAGE)
         vis_output = visualizer.draw_instance_predictions(predictions=instances)
 
         return prediction, vis_output
@@ -39,6 +38,7 @@ def setup_cfg(arg):
     add_idip_config(cfg)
     cfg.merge_from_file(arg.config_file)
     cfg.merge_from_list(arg.opts)
+    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = args.threshold
     cfg.freeze()
     return cfg
 
@@ -47,8 +47,10 @@ def get_parser():
     parser = argparse.ArgumentParser(description='Detectron2 demo for builtin configs')
     parser.add_argument('--config-file', metavar='FILE', help='path to config file')
     parser.add_argument('--input', nargs='+', help='A list of space separated input images or a single glob '
-                                                   'pattern such as directory/*.jpg')
-    parser.add_argument('--output', help='A file or directory to save output visualizations')
+                                                   'pattern such as directory/*.jpg', required=True)
+    parser.add_argument('--output', help='A file or directory to save output visualizations', required=True)
+    parser.add_argument('--threshold', type=float, default=0.5,
+                        help='Minimum score for instance predictions to be shown')
     parser.add_argument('--opts', help='Modify config options using the command-line <KEY VALUE> pairs', default=[],
                         nargs=argparse.REMAINDER)
     return parser
