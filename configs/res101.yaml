@@ -3,4 +3,4 @@ MODEL:
   WEIGHTS: 'results/r101.pkl'
   RESNETS:
     DEPTH: 101
-OUTPUT_DIR: 'results/r101'
+OUTPUT_DIR: 'results/res101'
