@@ -1,6 +1,5 @@
 import itertools
 import logging
-import os
 import weakref
 from typing import Any, Dict, List, Set
 
@@ -39,11 +38,9 @@ class Trainer(DefaultTrainer):
         self.register_hooks(self.build_hooks())
 
     @classmethod
-    def build_evaluator(cls, cfg, dataset_name, output_folder=None):
-        if output_folder is None:
-            output_folder = os.path.join(cfg.OUTPUT_DIR, 'inference')
+    def build_evaluator(cls, cfg, dataset_name):
         if 'coco' in dataset_name:
-            return COCOEvaluator(dataset_name, cfg, True, output_folder)
+            return COCOEvaluator(dataset_name)
         else:
             raise NotImplementedError('{} not supported yet'.format(dataset_name))
 
@@ -126,11 +123,5 @@ def main(arg):
 if __name__ == '__main__':
     args = default_argument_parser().parse_args()
     print('Command Line Args:', args)
-    launch(
-        main,
-        args.num_gpus,
-        num_machines=args.num_machines,
-        machine_rank=args.machine_rank,
-        dist_url=args.dist_url,
-        args=(args,),
-    )
+    launch(main, args.num_gpus, num_machines=args.num_machines, machine_rank=args.machine_rank, dist_url=args.dist_url,
+           args=(args,), )
