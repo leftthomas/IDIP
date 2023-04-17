@@ -1,5 +1,6 @@
 import itertools
 import logging
+import os
 import weakref
 from typing import Any, Dict, List, Set
 
@@ -38,9 +39,11 @@ class Trainer(DefaultTrainer):
         self.register_hooks(self.build_hooks())
 
     @classmethod
-    def build_evaluator(cls, cfg, dataset_name):
+    def build_evaluator(cls, cfg, dataset_name, output_folder=None):
+        if output_folder is None:
+            output_folder = os.path.join(cfg.OUTPUT_DIR, 'inference')
         if 'coco' in dataset_name:
-            return COCOEvaluator(dataset_name)
+            return COCOEvaluator(dataset_name, output_dir=output_folder)
         else:
             raise NotImplementedError('{} not supported yet'.format(dataset_name))
 
