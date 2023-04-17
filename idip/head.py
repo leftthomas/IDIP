@@ -136,7 +136,7 @@ class MaskHead(nn.Module):
         # [N, D, S, S]
         roi_feat = self.extractor(features, [Boxes(boxes)])
         if hasattr(self, 'instance_conv'):
-            roi_feat = self.instance_conv(obj_feat, roi_feat).permute(0, 2, 1).reshape(roi_feat.size())
+            roi_feat = self.instance_conv(obj_feat, roi_feat).permute(0, 2, 1).contiguous().reshape(roi_feat.size())
         # [N, D, 2*S, 2*S]
         x = self.relu(self.upsample(self.convs(roi_feat)))
         # [N, C, 2*S, 2*S]
