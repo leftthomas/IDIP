@@ -36,7 +36,7 @@ Set th environment variable DETECTRON2_DATASETS to the directory where the datas
 `export DETECTRON2_DATASETS=/home/data`. Then download the backbone weights
 from [MEGA](https://mega.nz/folder/mSg00RZS#tkb1KdwIGZRTqcWnPZov7A), put them in `results`.
 
-To train the model with `resnet50` backbone on COCO dataset:
+To train the model with `resnet50` backbone on `COCO 2017` dataset:
 
 ```
 python main.py --config-file configs/res50.yaml --num-gpus 2
@@ -48,7 +48,7 @@ Using tensorboard to visualize the training process:
 tensorboard --logdir=results --bind_all
 ```
 
-To evaluate the model with `resnet50` backbone on COCO dataset:
+To evaluate the model with `resnet50` backbone on `COCO 2017 Val` dataset:
 
 ```
 python main.py --config-file configs/res50.yaml --eval-only MODEL.WEIGHTS results/model.pth
@@ -62,13 +62,13 @@ python demo.py --config-file configs/res50.yaml --input image.jpg --output out.j
 
 ## Benchmarks
 
-The models are trained on two NVIDIA GeForce RTX 3090 GPUs (24G), and tested in `COCO Val 2017` dataset.
+The models are trained on two NVIDIA Tesla V100-SXM2-32GB GPUs, and tested in `COCO 2017` dataset.
 All the hyper-parameters are the default values.
 
-| Backbone                          |  AP  | AP<sub>50</sub> | AP<sub>75</sub> | AP<sub>S</sub> | AP<sub>M</sub> | AP<sub>L</sub> |                            Download                            |
-|-----------------------------------|:----:|:---------------:|:---------------:|:--------------:|:--------------:|:--------------:|:--------------------------------------------------------------:|
-| [ResNet-50](configs/res50.yaml)   | 37.3 |      37.5       |      37.5       |      37.3      |      37.5      |      37.5      | [MEGA](https://mega.nz/folder/mSg00RZS#tkb1KdwIGZRTqcWnPZov7A) |
-| [ResNet-101](configs/res101.yaml) | 41.0 |      41.1       |      41.1       |      41.0      |      41.1      |      41.1      | [MEGA](https://mega.nz/folder/mSg00RZS#tkb1KdwIGZRTqcWnPZov7A) |
+| Backbone                          | AP<sub>Val</sub> | AP<sub>Test</sub> | AP<sub>50</sub> | AP<sub>75</sub> | AP<sub>S</sub> | AP<sub>M</sub> | AP<sub>L</sub> |                            Download                            |
+|-----------------------------------|:----------------:|:-----------------:|:---------------:|:---------------:|:--------------:|:--------------:|:--------------:|:--------------------------------------------------------------:|
+| [ResNet-50](configs/res50.yaml)   |       37.3       |       37.5        |      37.5       |      37.5       |      37.3      |      37.5      |      37.5      | [MEGA](https://mega.nz/folder/mSg00RZS#tkb1KdwIGZRTqcWnPZov7A) |
+| [ResNet-101](configs/res101.yaml) |       41.0       |       41.1        |      41.1       |      41.1       |      41.0      |      41.1      |      41.1      | [MEGA](https://mega.nz/folder/mSg00RZS#tkb1KdwIGZRTqcWnPZov7A) |
 
 ## Results
 
