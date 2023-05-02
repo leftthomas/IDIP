@@ -65,10 +65,10 @@ python demo.py --config-file configs/res50.yaml --input image.jpg --output out.j
 The models are trained on two NVIDIA Tesla V100-SXM2-32GB GPUs, and tested in `COCO 2017` dataset.
 All the hyper-parameters are the default values.
 
-| Backbone                          | AP<sub>Val</sub> | AP<sub>Test</sub> | AP<sub>50</sub> | AP<sub>75</sub> | AP<sub>S</sub> | AP<sub>M</sub> | AP<sub>L</sub> |                            Download                            |
-|-----------------------------------|:----------------:|:-----------------:|:---------------:|:---------------:|:--------------:|:--------------:|:--------------:|:--------------------------------------------------------------:|
-| [ResNet-50](configs/res50.yaml)   |       37.3       |       37.5        |      37.5       |      37.5       |      37.3      |      37.5      |      37.5      | [MEGA](https://mega.nz/folder/mSg00RZS#tkb1KdwIGZRTqcWnPZov7A) |
-| [ResNet-101](configs/res101.yaml) |       41.0       |       41.1        |      41.1       |      41.1       |      41.0      |      41.1      |      41.1      | [MEGA](https://mega.nz/folder/mSg00RZS#tkb1KdwIGZRTqcWnPZov7A) |
+| Backbone                          | AP<sub>Val</sub> | AP<sub>Test</sub> | AP<sub>50</sub> | AP<sub>75</sub> | AP<sub>S</sub> | AP<sub>M</sub> | AP<sub>L</sub> |                                     Download                                      |
+|-----------------------------------|:----------------:|:-----------------:|:---------------:|:---------------:|:--------------:|:--------------:|:--------------:|:---------------------------------------------------------------------------------:|
+| [ResNet-50](configs/res50.yaml)   |       37.3       |       37.5        |      37.5       |      37.5       |      37.3      |      37.5      |      37.5      | [MEGA](https://mega.nz/file/qfxDBJII#44X2y4CONSRfTuG2FE0kFwneSnYVYltbOqzxTdysXIQ) |
+| [ResNet-101](configs/res101.yaml) |       41.0       |       41.1        |      41.1       |      41.1       |      41.0      |      41.1      |      41.1      | [MEGA](https://mega.nz/file/uS4iTKAQ#2Gy9Z_QdMgV4OAHnCZapL1tNDXf6N4IWAYFw2VJx3_I) |
 
 ## Results
 
