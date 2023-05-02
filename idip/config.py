@@ -9,7 +9,8 @@ def add_idip_config(cfg):
     # diffusion
     cfg.MODEL.IDIP.NUM_STEPS = 1000
     cfg.MODEL.IDIP.SAMPLING_TYPE = 'DDIM'
-    cfg.MODEL.IDIP.SAMPLING_STEPS = 1
+    cfg.MODEL.IDIP.WITH_DETERMINISTIC = False
+    cfg.MODEL.IDIP.SAMPLING_STEPS = 3
     cfg.MODEL.IDIP.WITH_DYNAMIC = True
 
     # loss

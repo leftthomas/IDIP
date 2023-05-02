@@ -28,8 +28,9 @@ class IDIP(nn.Module):
 
         # build diffusion
         self.num_steps = cfg.MODEL.IDIP.NUM_STEPS
-        self.sampling_steps = cfg.MODEL.IDIP.SAMPLING_STEPS
         self.sampling_type = cfg.MODEL.IDIP.SAMPLING_TYPE
+        self.with_deterministic = cfg.MODEL.IDIP.WITH_DETERMINISTIC
+        self.sampling_steps = self.num_steps if self.sampling_type == 'DDPM' else cfg.MODEL.IDIP.SAMPLING_STEPS
         alphas = cosine_schedule(self.num_steps)
         self.register_buffer('alphas_cumprod', torch.cumprod(alphas, dim=0))
 
@@ -154,10 +155,9 @@ class IDIP(nn.Module):
 
             # according DDIM to compute x_t of next time step
             alpha, alpha_next = self.alphas_cumprod[time_now], self.alphas_cumprod[time_next]
-            if self.sampling_type == 'DDIM':
+            if self.with_deterministic and self.sampling_type == 'DDIM':
                 sigma = 0.0
             else:
-                # DDPM
                 sigma = (1 - alpha / alpha_next).sqrt() * ((1 - alpha_next) / (1 - alpha)).sqrt()
             c = (1 - alpha_next - sigma ** 2).sqrt()
             noise = torch.randn_like(x_t)
