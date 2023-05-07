@@ -3,7 +3,7 @@
 A PyTorch implementation of IDIP based on the paper
 [Instance-aware Diffusion Implicit Process for Instance Segmentation]().
 
-![Network Architecture](results/arch.jpg)
+![Network Architecture](results/model.png)
 
 ## Requirements
 
@@ -72,4 +72,4 @@ All the hyper-parameters are the default values.
 
 ## Results
 
-![vis](results/visual.jpg)
+![vis](results/seg.png)
