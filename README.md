@@ -1,7 +1,7 @@
 # IDIP
 
 A PyTorch implementation of IDIP based on the paper
-[Instance-aware Diffusion Implicit Process for Instance Segmentation]().
+[Instance-aware Diffusion Implicit Process for Box-based Instance Segmentation]().
 
 ![Network Architecture](results/model.png)
 
