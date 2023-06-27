@@ -10,7 +10,7 @@ from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
 from detectron2.engine import DefaultTrainer, default_argument_parser, default_setup, launch, create_ddp_model, \
     SimpleTrainer
-from detectron2.evaluation import COCOEvaluator, verify_results
+from detectron2.evaluation import COCOEvaluator, verify_results, CityscapesInstanceEvaluator
 from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.utils.logger import setup_logger
 
@@ -44,6 +44,8 @@ class Trainer(DefaultTrainer):
             output_folder = os.path.join(cfg.OUTPUT_DIR, 'inference')
         if 'coco' in dataset_name:
             return COCOEvaluator(dataset_name, output_dir=output_folder)
+        elif 'cityscapes' in dataset_name:
+            return CityscapesInstanceEvaluator(dataset_name)
         else:
             raise NotImplementedError('{} not supported yet'.format(dataset_name))
 
