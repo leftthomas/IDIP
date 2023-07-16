@@ -1,6 +1,6 @@
 # IDIP
 
-A PyTorch implementation of IDIP based on the paper
+A PyTorch implementation of IDIP based on ECAI 2023 paper
 [Instance-aware Diffusion Implicit Process for Box-based Instance Segmentation]().
 
 ![Network Architecture](results/model.png)
