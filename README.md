@@ -19,6 +19,7 @@ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvi
 ```
 conda install tensorboard
 conda install -c conda-forge pycocotools
+pip install opencv-python-headless
 pip install git+https://github.com/facebookresearch/detectron2.git
 ```
 
