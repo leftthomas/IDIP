@@ -1,7 +1,7 @@
 # IDIP
 
 A PyTorch implementation of IDIP based on ECAI 2023 paper
-[Instance-aware Diffusion Implicit Process for Box-based Instance Segmentation]().
+[Instance-aware Diffusion Implicit Process for Box-based Instance Segmentation](https://ebooks.iospress.nl/doi/10.3233/FAIA230485).
 
 ![Network Architecture](results/model.png)
 
